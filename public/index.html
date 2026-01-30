@@ -25,7 +25,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   
   <style>
-    :root {
+    /* ============================================
+       THEME: DARK (Default)
+       ============================================ */
+    :root, [data-theme="dark"] {
       --bg-primary: #0a0e14;
       --bg-secondary: #111820;
       --bg-tertiary: #1a2332;
@@ -42,6 +45,56 @@
       --accent-blue: #4488ff;
       --accent-cyan: #00ddff;
       --accent-purple: #aa66ff;
+      --map-ocean: #0a0e14;
+      --scanline-opacity: 0.02;
+    }
+
+    /* ============================================
+       THEME: LIGHT
+       ============================================ */
+    [data-theme="light"] {
+      --bg-primary: #f5f7fa;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #e8ecf0;
+      --bg-panel: rgba(255, 255, 255, 0.95);
+      --border-color: rgba(0, 100, 200, 0.2);
+      --text-primary: #1a2332;
+      --text-secondary: #4a5a6a;
+      --text-muted: #7a8a9a;
+      --accent-amber: #d4940a;
+      --accent-amber-dim: rgba(212, 148, 10, 0.4);
+      --accent-green: #00aa55;
+      --accent-green-dim: rgba(0, 170, 85, 0.4);
+      --accent-red: #cc3344;
+      --accent-blue: #2266cc;
+      --accent-cyan: #0099bb;
+      --accent-purple: #7744cc;
+      --map-ocean: #f0f4f8;
+      --scanline-opacity: 0;
+    }
+
+    /* ============================================
+       THEME: LEGACY (Classic HamClock Style)
+       ============================================ */
+    [data-theme="legacy"] {
+      --bg-primary: #000000;
+      --bg-secondary: #0a0a0a;
+      --bg-tertiary: #151515;
+      --bg-panel: rgba(0, 0, 0, 0.95);
+      --border-color: rgba(0, 255, 0, 0.3);
+      --text-primary: #00ff00;
+      --text-secondary: #00cc00;
+      --text-muted: #008800;
+      --accent-amber: #ffaa00;
+      --accent-amber-dim: rgba(255, 170, 0, 0.5);
+      --accent-green: #00ff00;
+      --accent-green-dim: rgba(0, 255, 0, 0.5);
+      --accent-red: #ff0000;
+      --accent-blue: #00aaff;
+      --accent-cyan: #00ffff;
+      --accent-purple: #ff00ff;
+      --map-ocean: #000008;
+      --scanline-opacity: 0.05;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -52,6 +105,13 @@
       color: var(--text-primary);
       min-height: 100vh;
       overflow-x: hidden;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    /* Legacy theme uses monospace font */
+    [data-theme="legacy"] body,
+    [data-theme="legacy"] * {
+      font-family: 'JetBrains Mono', monospace !important;
     }
 
     /* Subtle scanline effect */
@@ -59,7 +119,7 @@
       content: '';
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.02) 2px, rgba(0,0,0,0.02) 4px);
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,var(--scanline-opacity)) 2px, rgba(0,0,0,var(--scanline-opacity)) 4px);
       pointer-events: none;
       z-index: 9999;
     }
@@ -67,6 +127,7 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
     .loading-spinner {
       width: 14px; height: 14px;
@@ -75,6 +136,12 @@
       border-radius: 50%;
       animation: spin 1s linear infinite;
       display: inline-block;
+    }
+
+    /* Legacy theme specific styles */
+    [data-theme="legacy"] .loading-spinner {
+      border-color: var(--accent-green);
+      border-top-color: var(--accent-amber);
     }
 
     /* Leaflet customizations */
@@ -213,6 +280,8 @@
       callsign: 'N0CALL',
       location: { lat: 40.0150, lon: -105.2705 }, // Boulder, CO (default)
       defaultDX: { lat: 35.6762, lon: 139.6503 }, // Tokyo
+      theme: 'dark', // 'dark', 'light', or 'legacy'
+      layout: 'modern', // 'modern' or 'legacy'
       refreshIntervals: {
         spaceWeather: 300000,
         bandConditions: 300000,
@@ -243,6 +312,11 @@
       } catch (e) {
         console.error('Error saving config:', e);
       }
+    };
+
+    // Apply theme to document
+    const applyTheme = (theme) => {
+      document.documentElement.setAttribute('data-theme', theme);
     };
 
     // ============================================
@@ -929,6 +1003,8 @@
       const [lon, setLon] = useState(config.location.lon.toString());
       const [gridSquare, setGridSquare] = useState('');
       const [useGeolocation, setUseGeolocation] = useState(false);
+      const [theme, setTheme] = useState(config.theme || 'dark');
+      const [layout, setLayout] = useState(config.layout || 'modern');
 
       // Calculate grid square from lat/lon
       useEffect(() => {
@@ -938,6 +1014,11 @@
           setGridSquare(calculateGridSquare(latNum, lonNum));
         }
       }, [lat, lon]);
+
+      // Preview theme changes in real-time
+      useEffect(() => {
+        applyTheme(theme);
+      }, [theme]);
 
       const handleGeolocation = () => {
         if (navigator.geolocation) {
@@ -978,10 +1059,18 @@
         const newConfig = {
           ...config,
           callsign: callsign.toUpperCase().trim(),
-          location: { lat: latNum, lon: lonNum }
+          location: { lat: latNum, lon: lonNum },
+          theme: theme,
+          layout: layout
         };
         
         onSave(newConfig);
+        onClose();
+      };
+
+      const handleClose = () => {
+        // Revert theme if cancelled
+        applyTheme(config.theme || 'dark');
         onClose();
       };
 
@@ -1018,16 +1107,40 @@
 
       if (!isOpen) return null;
 
+      const inputStyle = {
+        width: '100%', padding: '12px 16px', background: 'var(--bg-tertiary)',
+        border: '1px solid var(--border-color)', borderRadius: '6px',
+        color: 'var(--accent-green)', fontFamily: 'JetBrains Mono, monospace',
+        fontSize: '18px', outline: 'none', textTransform: 'uppercase'
+      };
+
+      const labelStyle = {
+        display: 'block', color: 'var(--text-secondary)', fontSize: '12px',
+        marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px'
+      };
+
+      const buttonGroupStyle = {
+        display: 'flex', gap: '8px', marginBottom: '20px'
+      };
+
+      const themeButtonStyle = (isActive) => ({
+        flex: 1, padding: '10px', background: isActive ? 'var(--accent-amber)' : 'var(--bg-tertiary)',
+        border: '1px solid var(--border-color)', borderRadius: '6px',
+        color: isActive ? '#000' : 'var(--text-secondary)', fontFamily: 'JetBrains Mono, monospace',
+        fontSize: '11px', cursor: 'pointer', fontWeight: isActive ? '700' : '400',
+        transition: 'all 0.2s'
+      });
+
       return (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center',
           zIndex: 10000, backdropFilter: 'blur(5px)'
-        }} onClick={onClose}>
+        }} onClick={handleClose}>
           <div style={{
             background: 'var(--bg-secondary)', border: '1px solid var(--border-color)',
-            borderRadius: '12px', padding: '30px', width: '90%', maxWidth: '450px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+            borderRadius: '12px', padding: '30px', width: '90%', maxWidth: '500px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)', maxHeight: '90vh', overflowY: 'auto'
           }} onClick={e => e.stopPropagation()}>
             <h2 style={{ 
               fontFamily: 'Orbitron, monospace', fontSize: '24px', color: 'var(--accent-amber)',
@@ -1038,77 +1151,49 @@
 
             {/* Callsign */}
             <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                Your Callsign
-              </label>
+              <label style={labelStyle}>Your Callsign</label>
               <input
                 type="text"
                 value={callsign}
                 onChange={(e) => setCallsign(e.target.value.toUpperCase())}
                 placeholder="W1ABC"
-                style={{
-                  width: '100%', padding: '12px 16px', background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)', borderRadius: '6px',
-                  color: 'var(--accent-green)', fontFamily: 'JetBrains Mono, monospace',
-                  fontSize: '18px', outline: 'none', textTransform: 'uppercase'
-                }}
+                style={inputStyle}
               />
             </div>
 
             {/* Grid Square */}
             <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                Grid Square (or enter lat/lon below)
-              </label>
+              <label style={labelStyle}>Grid Square (or enter lat/lon below)</label>
               <input
                 type="text"
                 value={gridSquare}
                 onChange={(e) => handleGridSquareChange(e.target.value)}
                 placeholder="FN31pr"
                 maxLength={6}
-                style={{
-                  width: '100%', padding: '12px 16px', background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)', borderRadius: '6px',
-                  color: 'var(--accent-cyan)', fontFamily: 'JetBrains Mono, monospace',
-                  fontSize: '18px', outline: 'none', textTransform: 'uppercase'
-                }}
+                style={{...inputStyle, color: 'var(--accent-cyan)'}}
               />
             </div>
 
             {/* Lat/Lon */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
               <div>
-                <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  Latitude
-                </label>
+                <label style={labelStyle}>Latitude</label>
                 <input
                   type="text"
                   value={lat}
                   onChange={(e) => setLat(e.target.value)}
                   placeholder="40.0150"
-                  style={{
-                    width: '100%', padding: '10px 12px', background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)', borderRadius: '6px',
-                    color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace',
-                    fontSize: '14px', outline: 'none'
-                  }}
+                  style={{...inputStyle, fontSize: '14px', color: 'var(--text-primary)'}}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '12px', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  Longitude
-                </label>
+                <label style={labelStyle}>Longitude</label>
                 <input
                   type="text"
                   value={lon}
                   onChange={(e) => setLon(e.target.value)}
                   placeholder="-105.2705"
-                  style={{
-                    width: '100%', padding: '10px 12px', background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)', borderRadius: '6px',
-                    color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace',
-                    fontSize: '14px', outline: 'none'
-                  }}
+                  style={{...inputStyle, fontSize: '14px', color: 'var(--text-primary)'}}
                 />
               </div>
             </div>
@@ -1132,10 +1217,48 @@
               )}
             </button>
 
+            {/* Theme Selection */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={labelStyle}>Theme</label>
+              <div style={buttonGroupStyle}>
+                <button style={themeButtonStyle(theme === 'dark')} onClick={() => setTheme('dark')}>
+                  🌙 Dark
+                </button>
+                <button style={themeButtonStyle(theme === 'light')} onClick={() => setTheme('light')}>
+                  ☀️ Light
+                </button>
+                <button style={themeButtonStyle(theme === 'legacy')} onClick={() => setTheme('legacy')}>
+                  📟 Legacy
+                </button>
+              </div>
+              <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '-12px', marginBottom: '12px' }}>
+                {theme === 'legacy' && '→ Classic green-on-black HamClock style'}
+                {theme === 'light' && '→ Bright theme for daytime use'}
+                {theme === 'dark' && '→ Modern dark theme (default)'}
+              </p>
+            </div>
+
+            {/* Layout Selection */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={labelStyle}>Layout</label>
+              <div style={buttonGroupStyle}>
+                <button style={themeButtonStyle(layout === 'modern')} onClick={() => setLayout('modern')}>
+                  📊 Modern
+                </button>
+                <button style={themeButtonStyle(layout === 'legacy')} onClick={() => setLayout('legacy')}>
+                  📺 Classic
+                </button>
+              </div>
+              <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '-12px' }}>
+                {layout === 'legacy' && '→ Layout inspired by original HamClock'}
+                {layout === 'modern' && '→ Modern responsive grid layout'}
+              </p>
+            </div>
+
             {/* Buttons */}
             <div style={{ display: 'flex', gap: '12px' }}>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 style={{
                   flex: 1, padding: '14px', background: 'var(--bg-tertiary)',
                   border: '1px solid var(--border-color)', borderRadius: '6px',
@@ -1180,6 +1303,11 @@
       const [dxLocation, setDxLocation] = useState(config.defaultDX);
       const [showSettings, setShowSettings] = useState(false);
 
+      // Apply theme on initial load
+      useEffect(() => {
+        applyTheme(config.theme || 'dark');
+      }, []);
+
       // Check if this is first run (no config saved)
       useEffect(() => {
         const saved = localStorage.getItem('openhamclock_config');
@@ -1192,6 +1320,7 @@
       const handleSaveConfig = (newConfig) => {
         setConfig(newConfig);
         saveConfig(newConfig);
+        applyTheme(newConfig.theme || 'dark');
       };
 
       const spaceWeather = useSpaceWeather();
@@ -1227,7 +1356,7 @@
 
       return (
         <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
-          <Header callsign={config.callsign} uptime={uptime} version="3.1.0" onSettingsClick={() => setShowSettings(true)} />
+          <Header callsign={config.callsign} uptime={uptime} version="3.2.0" onSettingsClick={() => setShowSettings(true)} />
           
           <main style={{ padding: '20px', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: 'auto 1fr auto', gap: '16px', maxWidth: '1800px', margin: '0 auto', minHeight: 'calc(100vh - 120px)' }}>
             {/* Row 1 */}
@@ -1254,7 +1383,7 @@
           </main>
 
           <footer style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
-            OpenHamClock v3.1.0 | In memory of Elwood Downey WB0OEW | Map tiles © OpenStreetMap, ESRI, CARTO | 73 de {config.callsign}
+            OpenHamClock v3.2.0 | In memory of Elwood Downey WB0OEW | Map tiles © OpenStreetMap, ESRI, CARTO | 73 de {config.callsign}
           </footer>
 
           {/* Settings Panel */}
