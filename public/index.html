@@ -765,23 +765,6 @@
 
       return { data, loading };
     };
-            setData([{
-              freq: '---',
-              call: 'ERROR',
-              comment: 'Could not connect to DX cluster',
-              time: '--:--z',
-              spotter: ''
-            }]);
-          }
-          finally { setLoading(false); }
-        };
-        fetchDX();
-        const interval = setInterval(fetchDX, 30000); // 30 second refresh
-        return () => clearInterval(interval);
-      }, []);
-
-      return { data, loading };
-    };
 
     // ============================================
     // CONTEST CALENDAR HOOK
