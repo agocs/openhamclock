@@ -768,6 +768,205 @@
     };
 
     // ============================================
+    // PROPAGATION PREDICTION HOOK
+    // ============================================
+    const usePropagation = (deLocation, dxLocation) => {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        const fetchPropagation = async () => {
+          try {
+            const response = await fetch(
+              `/api/propagation?deLat=${deLocation.lat}&deLon=${deLocation.lon}&dxLat=${dxLocation.lat}&dxLon=${dxLocation.lon}`
+            );
+            
+            if (response.ok) {
+              const result = await response.json();
+              setData(result);
+            }
+          } catch (err) {
+            console.error('Propagation fetch error:', err);
+          } finally {
+            setLoading(false);
+          }
+        };
+        
+        fetchPropagation();
+        // Refresh every 15 minutes
+        const interval = setInterval(fetchPropagation, 900000);
+        return () => clearInterval(interval);
+      }, [deLocation.lat, deLocation.lon, dxLocation.lat, dxLocation.lon]);
+
+      return { data, loading };
+    };
+
+    // ============================================
+    // PROPAGATION PANEL COMPONENT
+    // ============================================
+    const PropagationPanel = ({ propagation, loading }) => {
+      if (loading || !propagation) {
+        return (
+          <div className="panel">
+            <div className="panel-header">📡 HF Propagation</div>
+            <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              Loading predictions...
+            </div>
+          </div>
+        );
+      }
+
+      const { solarData, distance, currentBands, currentHour, hourlyPredictions } = propagation;
+      
+      // Get status color
+      const getStatusColor = (status) => {
+        switch (status) {
+          case 'EXCELLENT': return '#00ff88';
+          case 'GOOD': return '#88ff00';
+          case 'FAIR': return '#ffcc00';
+          case 'POOR': return '#ff8800';
+          case 'CLOSED': return '#ff4444';
+          default: return 'var(--text-muted)';
+        }
+      };
+
+      // Get reliability bar color
+      const getReliabilityColor = (rel) => {
+        if (rel >= 70) return '#00ff88';
+        if (rel >= 50) return '#88ff00';
+        if (rel >= 30) return '#ffcc00';
+        if (rel >= 15) return '#ff8800';
+        return '#ff4444';
+      };
+
+      return (
+        <div className="panel">
+          <div className="panel-header">
+            📡 HF Propagation to DX
+            <span style={{ fontSize: '10px', marginLeft: '8px', color: 'var(--text-muted)' }}>
+              {Math.round(distance).toLocaleString()} km
+            </span>
+          </div>
+          
+          {/* Solar Conditions Summary */}
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: '1fr 1fr 1fr', 
+            gap: '8px', 
+            padding: '8px',
+            marginBottom: '8px',
+            background: 'var(--bg-tertiary)',
+            borderRadius: '4px',
+            fontSize: '11px'
+          }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ color: 'var(--text-muted)' }}>SFI</div>
+              <div style={{ color: 'var(--accent-primary)', fontWeight: 'bold' }}>{solarData.sfi}</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ color: 'var(--text-muted)' }}>SSN</div>
+              <div style={{ color: 'var(--accent-secondary)', fontWeight: 'bold' }}>{solarData.ssn}</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ color: 'var(--text-muted)' }}>K</div>
+              <div style={{ 
+                color: solarData.kIndex >= 4 ? '#ff4444' : solarData.kIndex >= 3 ? '#ffcc00' : '#00ff88',
+                fontWeight: 'bold' 
+              }}>{solarData.kIndex}</div>
+            </div>
+          </div>
+          
+          {/* Band Predictions */}
+          <div style={{ fontSize: '11px' }}>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '45px 1fr 55px', 
+              gap: '4px',
+              padding: '4px 0',
+              borderBottom: '1px solid var(--border-color)',
+              marginBottom: '4px',
+              color: 'var(--text-muted)',
+              fontSize: '10px'
+            }}>
+              <span>BAND</span>
+              <span>RELIABILITY</span>
+              <span style={{ textAlign: 'right' }}>STATUS</span>
+            </div>
+            
+            {currentBands.slice(0, 8).map((band, idx) => (
+              <div key={band.band} style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '45px 1fr 55px', 
+                gap: '4px',
+                padding: '3px 0',
+                alignItems: 'center',
+                borderBottom: idx < 7 ? '1px solid var(--bg-tertiary)' : 'none'
+              }}>
+                <span style={{ 
+                  fontFamily: 'JetBrains Mono, monospace',
+                  color: band.reliability >= 50 ? 'var(--color-primary)' : 'var(--text-muted)'
+                }}>
+                  {band.band}
+                </span>
+                <div style={{ position: 'relative', height: '12px' }}>
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    height: '100%',
+                    width: '100%',
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: '2px'
+                  }} />
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    height: '100%',
+                    width: `${band.reliability}%`,
+                    background: getReliabilityColor(band.reliability),
+                    borderRadius: '2px',
+                    transition: 'width 0.3s ease'
+                  }} />
+                  <span style={{
+                    position: 'absolute',
+                    right: '4px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    fontSize: '9px',
+                    color: band.reliability > 50 ? '#000' : 'var(--text-muted)'
+                  }}>
+                    {band.reliability}%
+                  </span>
+                </div>
+                <span style={{ 
+                  textAlign: 'right',
+                  fontSize: '9px',
+                  fontWeight: 'bold',
+                  color: getStatusColor(band.status)
+                }}>
+                  {band.status}
+                </span>
+              </div>
+            ))}
+          </div>
+          
+          {/* Footer */}
+          <div style={{ 
+            marginTop: '8px', 
+            paddingTop: '8px',
+            borderTop: '1px solid var(--border-color)',
+            fontSize: '9px',
+            color: 'var(--text-muted)',
+            textAlign: 'center'
+          }}>
+            Predictions at {String(currentHour).padStart(2, '0')}:00 UTC • Based on current solar conditions
+          </div>
+        </div>
+      );
+    };
+
+    // ============================================
     // LEAFLET MAP COMPONENT
     // ============================================
     const WorldMap = ({ deLocation, dxLocation, onDXChange, potaSpots }) => {
@@ -1277,7 +1476,7 @@
     const LegacyLayout = ({ 
       config, currentTime, utcTime, utcDate, localTime, localDate,
       deGrid, dxGrid, deSunTimes, dxSunTimes, dxLocation, onDXChange,
-      spaceWeather, bandConditions, potaSpots, dxCluster, contests,
+      spaceWeather, bandConditions, potaSpots, dxCluster, contests, propagation,
       onSettingsClick
     }) => {
       const bearing = calculateBearing(config.location.lat, config.location.lon, dxLocation.lat, dxLocation.lon);
@@ -1488,6 +1687,44 @@
                 ))}
               </div>
             </div>
+
+            {/* Propagation */}
+            {propagation.data && (
+              <div style={{ marginTop: '8px' }}>
+                <div style={{ ...labelStyle, marginBottom: '8px' }}>📡 PROPAGATION</div>
+                <div style={{ fontSize: '10px' }}>
+                  {propagation.data.currentBands.slice(0, 6).map((b, i) => (
+                    <div key={b.band} style={{ 
+                      display: 'flex', 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center',
+                      padding: '2px 0',
+                      borderBottom: i < 5 ? '1px solid rgba(255,255,255,0.05)' : 'none'
+                    }}>
+                      <span style={{ color: b.reliability >= 50 ? 'var(--accent-green)' : 'var(--text-muted)' }}>{b.band}</span>
+                      <div style={{ 
+                        width: '60px', 
+                        height: '8px', 
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: '2px',
+                        overflow: 'hidden'
+                      }}>
+                        <div style={{ 
+                          width: `${b.reliability}%`, 
+                          height: '100%',
+                          background: b.reliability >= 70 ? '#00ff88' : b.reliability >= 50 ? '#88ff00' : b.reliability >= 30 ? '#ffcc00' : '#ff8800',
+                          borderRadius: '2px'
+                        }} />
+                      </div>
+                      <span style={{ 
+                        fontSize: '9px',
+                        color: b.reliability >= 70 ? '#00ff88' : b.reliability >= 50 ? '#88ff00' : b.reliability >= 30 ? '#ffcc00' : '#ff8800'
+                      }}>{b.status.substring(0, 4)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* BOTTOM - Footer */}
@@ -1847,6 +2084,7 @@
       const potaSpots = usePOTASpots();
       const dxCluster = useDXCluster();
       const contests = useContests();
+      const propagation = usePropagation(config.location, dxLocation);
 
       const deGrid = useMemo(() => calculateGridSquare(config.location.lat, config.location.lon), [config.location]);
       const dxGrid = useMemo(() => calculateGridSquare(dxLocation.lat, dxLocation.lon), [dxLocation]);
@@ -1896,6 +2134,7 @@
               potaSpots={potaSpots}
               dxCluster={dxCluster}
               contests={contests}
+              propagation={propagation}
               onSettingsClick={() => setShowSettings(true)}
             />
             <SettingsPanel 
@@ -1936,33 +2175,7 @@
             <BandConditionsPanel bands={bandConditions.data} loading={bandConditions.loading} />
             <DXClusterPanel spots={dxCluster.data} loading={dxCluster.loading} />
             <POTAPanel activities={potaSpots.data} loading={potaSpots.loading} />
-            <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px', backdropFilter: 'blur(10px)' }}>
-              <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--accent-purple)', letterSpacing: '2px', marginBottom: '16px' }}>
-                📊 QUICK STATS
-              </div>
-              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Active Contests</span>
-                  <span style={{ color: 'var(--accent-green)', fontWeight: '600' }}>{contests.data.filter(c => c.status === 'active').length}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>POTA Activators</span>
-                  <span style={{ color: 'var(--accent-amber)', fontWeight: '600' }}>{potaSpots.data.length}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>DX Spots</span>
-                  <span style={{ color: 'var(--accent-cyan)', fontWeight: '600' }}>{dxCluster.data.length}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Solar Flux</span>
-                  <span style={{ color: 'var(--accent-amber)', fontWeight: '600' }}>{spaceWeather.data?.solarFlux || '--'}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Uptime</span>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>{uptime}</span>
-                </div>
-              </div>
-            </div>
+            <PropagationPanel propagation={propagation.data} loading={propagation.loading} />
           </main>
 
           <footer style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>

@@ -282,6 +282,188 @@ app.get('/api/dxcluster/spots', async (req, res) => {
   res.json([]);
 });
 
+// ============================================
+// VOACAP / HF PROPAGATION PREDICTION API
+// ============================================
+
+app.get('/api/propagation', async (req, res) => {
+  const { deLat, deLon, dxLat, dxLon } = req.query;
+  
+  console.log('[Propagation] Calculating for DE:', deLat, deLon, 'to DX:', dxLat, dxLon);
+  
+  try {
+    // Get current space weather data for calculations
+    let sfi = 150, ssn = 100, kIndex = 2; // Defaults
+    
+    try {
+      const [fluxRes, kRes] = await Promise.allSettled([
+        fetch('https://services.swpc.noaa.gov/json/f107_cm_flux.json'),
+        fetch('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json')
+      ]);
+      
+      if (fluxRes.status === 'fulfilled' && fluxRes.value.ok) {
+        const data = await fluxRes.value.json();
+        if (data?.length) sfi = Math.round(data[data.length - 1].flux || 150);
+      }
+      if (kRes.status === 'fulfilled' && kRes.value.ok) {
+        const data = await kRes.value.json();
+        if (data?.length > 1) kIndex = parseInt(data[data.length - 1][1]) || 2;
+      }
+      // Estimate SSN from SFI: SSN ≈ (SFI - 67) / 0.97
+      ssn = Math.max(0, Math.round((sfi - 67) / 0.97));
+    } catch (e) {
+      console.log('[Propagation] Using default solar values');
+    }
+    
+    console.log('[Propagation] Solar data - SFI:', sfi, 'SSN:', ssn, 'K:', kIndex);
+    
+    // Calculate distance and bearing
+    const de = { lat: parseFloat(deLat) || 40, lon: parseFloat(deLon) || -75 };
+    const dx = { lat: parseFloat(dxLat) || 35, lon: parseFloat(dxLon) || 139 };
+    
+    const distance = calculateDistance(de.lat, de.lon, dx.lat, dx.lon);
+    const midLat = (de.lat + dx.lat) / 2;
+    
+    console.log('[Propagation] Distance:', Math.round(distance), 'km, MidLat:', midLat.toFixed(1));
+    
+    // Calculate propagation for each band at each hour
+    const bands = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
+    const bandFreqs = [1.8, 3.5, 7, 10, 14, 18, 21, 24, 28, 50]; // MHz
+    const currentHour = new Date().getUTCHours();
+    
+    // Generate 24-hour predictions
+    const predictions = {};
+    
+    bands.forEach((band, idx) => {
+      const freq = bandFreqs[idx];
+      predictions[band] = [];
+      
+      for (let hour = 0; hour < 24; hour++) {
+        const reliability = calculateBandReliability(
+          freq, distance, midLat, hour, sfi, ssn, kIndex, de, dx
+        );
+        predictions[band].push({
+          hour,
+          reliability: Math.round(reliability),
+          snr: calculateSNR(reliability)
+        });
+      }
+    });
+    
+    // Get current best bands
+    const currentBands = bands.map((band, idx) => ({
+      band,
+      freq: bandFreqs[idx],
+      reliability: predictions[band][currentHour].reliability,
+      snr: predictions[band][currentHour].snr,
+      status: getStatus(predictions[band][currentHour].reliability)
+    })).sort((a, b) => b.reliability - a.reliability);
+    
+    res.json({
+      solarData: { sfi, ssn, kIndex },
+      distance: Math.round(distance),
+      currentHour,
+      currentBands,
+      hourlyPredictions: predictions
+    });
+    
+  } catch (error) {
+    console.error('[Propagation] Error:', error.message);
+    res.status(500).json({ error: 'Failed to calculate propagation' });
+  }
+});
+
+// Calculate great circle distance in km
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Calculate band reliability percentage (simplified VOACAP-style)
+function calculateBandReliability(freq, distance, midLat, hour, sfi, ssn, kIndex, de, dx) {
+  // Maximum Usable Frequency estimation
+  // MUF ≈ criticalFreq * secant(zenith angle) * sqrt(1 + distance/4000)
+  
+  // Critical frequency varies with solar activity and time
+  // foF2 ≈ 0.85 * sqrt(ssn + 12) * (1 + 0.3 * cos(hour * PI / 12))
+  const hourFactor = 1 + 0.4 * Math.cos((hour - 12) * Math.PI / 12);
+  const foF2 = 0.9 * Math.sqrt(ssn + 15) * hourFactor;
+  
+  // Distance factor (longer paths need lower angles, higher MUF)
+  const distFactor = Math.sqrt(1 + distance / 3500);
+  
+  // Latitude factor (higher latitudes = more absorption, lower MUF)
+  const latFactor = 1 - Math.abs(midLat) / 200;
+  
+  // Estimated MUF
+  const muf = foF2 * distFactor * latFactor * 3.5;
+  
+  // Lowest Usable Frequency (absorption limit)
+  // LUF increases with solar activity and during daytime
+  const dayNight = isDaytime(hour, (de.lon + dx.lon) / 2) ? 1.5 : 0.5;
+  const luf = 2 + (sfi / 100) * dayNight + kIndex * 0.5;
+  
+  // Calculate reliability based on frequency vs MUF/LUF
+  let reliability = 0;
+  
+  if (freq > muf) {
+    // Frequency above MUF - poor propagation
+    reliability = Math.max(0, 50 - (freq - muf) * 10);
+  } else if (freq < luf) {
+    // Frequency below LUF - too much absorption
+    reliability = Math.max(0, 50 - (luf - freq) * 15);
+  } else {
+    // Frequency in usable range
+    const midFreq = (muf + luf) / 2;
+    const optimalness = 1 - Math.abs(freq - midFreq) / (muf - luf);
+    reliability = 50 + optimalness * 45;
+  }
+  
+  // K-index degradation (geomagnetic storms)
+  if (kIndex >= 5) reliability *= 0.3;
+  else if (kIndex >= 4) reliability *= 0.6;
+  else if (kIndex >= 3) reliability *= 0.8;
+  
+  // Distance adjustment - very long paths are harder
+  if (distance > 15000) reliability *= 0.7;
+  else if (distance > 10000) reliability *= 0.85;
+  
+  // High bands need higher solar activity
+  if (freq >= 21 && sfi < 100) reliability *= (sfi / 100);
+  if (freq >= 28 && sfi < 120) reliability *= (sfi / 120);
+  
+  return Math.min(99, Math.max(0, reliability));
+}
+
+// Check if it's daytime at given longitude
+function isDaytime(utcHour, longitude) {
+  const localHour = (utcHour + longitude / 15 + 24) % 24;
+  return localHour >= 6 && localHour <= 18;
+}
+
+// Convert reliability to estimated SNR
+function calculateSNR(reliability) {
+  if (reliability >= 80) return '+20dB';
+  if (reliability >= 60) return '+10dB';
+  if (reliability >= 40) return '0dB';
+  if (reliability >= 20) return '-10dB';
+  return '-20dB';
+}
+
+// Get status label from reliability
+function getStatus(reliability) {
+  if (reliability >= 70) return 'EXCELLENT';
+  if (reliability >= 50) return 'GOOD';
+  if (reliability >= 30) return 'FAIR';
+  if (reliability >= 15) return 'POOR';
+  return 'CLOSED';
+}
+
 // QRZ Callsign lookup (requires API key)
 app.get('/api/qrz/lookup/:callsign', async (req, res) => {
   const { callsign } = req.params;
