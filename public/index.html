@@ -1511,7 +1511,7 @@
     // ============================================
     // LEAFLET MAP COMPONENT
     // ============================================
-    const WorldMap = ({ deLocation, dxLocation, onDXChange, potaSpots, mySpots, dxPaths, satellites, showDXPaths, showPOTA, showSatellites }) => {
+    const WorldMap = ({ deLocation, dxLocation, onDXChange, potaSpots, mySpots, dxPaths, satellites, showDXPaths, showPOTA, showSatellites, onToggleSatellites }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const tileLayerRef = useRef(null);
@@ -1989,6 +1989,33 @@
               <option key={key} value={key}>{style.name}</option>
             ))}
           </select>
+          
+          {/* Satellite toggle button */}
+          {onToggleSatellites && (
+            <button
+              onClick={onToggleSatellites}
+              style={{
+                position: 'absolute',
+                top: '10px',
+                left: '50px',
+                background: showSatellites ? 'rgba(0, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.8)',
+                border: `1px solid ${showSatellites ? '#00ffff' : '#666'}`,
+                color: showSatellites ? '#00ffff' : '#888',
+                padding: '6px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontFamily: 'JetBrains Mono',
+                cursor: 'pointer',
+                zIndex: 1000,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+              title={showSatellites ? 'Hide satellites' : 'Show satellites'}
+            >
+              🛰 SAT {showSatellites ? 'ON' : 'OFF'}
+            </button>
+          )}
           
           {/* Map Legend - Bottom of map */}
           <div style={{
@@ -2585,6 +2612,7 @@
               showDXPaths={mapLayers.showDXPaths}
               showPOTA={mapLayers.showPOTA}
               showSatellites={mapLayers.showSatellites}
+              onToggleSatellites={toggleSatellites}
             />
           </div>
 
@@ -3481,6 +3509,7 @@
               showDXPaths={mapLayers.showDXPaths}
               showPOTA={mapLayers.showPOTA}
               showSatellites={mapLayers.showSatellites}
+              onToggleSatellites={toggleSatellites}
             />
             <div style={{ position: 'absolute', bottom: '8px', left: '50%', transform: 'translateX(-50%)', fontSize: '13px', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.7)', padding: '2px 8px', borderRadius: '4px' }}>
               Click map to set DX • 73 de {config.callsign}
