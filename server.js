@@ -1689,6 +1689,10 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 function interpolateFoF2(lat, lon, stations) {
   if (!stations || stations.length === 0) return null;
   
+  // Maximum distance (km) to consider ionosonde data valid
+  // Beyond this, the data is too far away to be representative
+  const MAX_VALID_DISTANCE = 3000; // km
+  
   // Calculate distances to all stations
   const stationsWithDist = stations.map(s => ({
     ...s,
@@ -1699,7 +1703,26 @@ function interpolateFoF2(lat, lon, stations) {
   
   // Sort by distance and take nearest 5
   stationsWithDist.sort((a, b) => a.distance - b.distance);
-  const nearest = stationsWithDist.slice(0, 5);
+  
+  // Check if nearest station is within valid range
+  if (stationsWithDist[0].distance > MAX_VALID_DISTANCE) {
+    console.log(`[Ionosonde] Nearest station ${stationsWithDist[0].name} is ${Math.round(stationsWithDist[0].distance)}km away - too far, using estimates`);
+    return {
+      foF2: null,
+      mufd: null,
+      hmF2: null,
+      md: 3.0,
+      nearestStation: stationsWithDist[0].name,
+      nearestDistance: Math.round(stationsWithDist[0].distance),
+      stationsUsed: 0,
+      method: 'no-coverage',
+      reason: `Nearest ionosonde (${stationsWithDist[0].name}) is ${Math.round(stationsWithDist[0].distance)}km away - no local coverage`
+    };
+  }
+  
+  // Filter to only stations within valid range
+  const validStations = stationsWithDist.filter(s => s.distance <= MAX_VALID_DISTANCE);
+  const nearest = validStations.slice(0, 5);
   
   // If very close to a station, use its value directly
   if (nearest[0].distance < 100) {
@@ -1710,6 +1733,7 @@ function interpolateFoF2(lat, lon, stations) {
       md: nearest[0].md,
       source: nearest[0].name,
       confidence: nearest[0].confidence,
+      nearestDistance: Math.round(nearest[0].distance),
       method: 'direct'
     };
   }
@@ -1794,17 +1818,23 @@ app.get('/api/propagation', async (req, res) => {
     // Get ionospheric data at path midpoint
     const ionoData = interpolateFoF2(midLat, midLon, ionosondeStations);
     
+    // Check if we have valid ionosonde coverage
+    const hasValidIonoData = ionoData && ionoData.method !== 'no-coverage' && ionoData.foF2;
+    
     console.log('[Propagation] Distance:', Math.round(distance), 'km');
     console.log('[Propagation] Solar: SFI', sfi, 'SSN', ssn, 'K', kIndex);
-    if (ionoData) {
-      console.log('[Propagation] Real foF2:', ionoData.foF2?.toFixed(2), 'MHz from', ionoData.nearestStation || ionoData.source);
+    if (hasValidIonoData) {
+      console.log('[Propagation] Real foF2:', ionoData.foF2?.toFixed(2), 'MHz from', ionoData.nearestStation || ionoData.source, '(', ionoData.nearestDistance, 'km away)');
+    } else if (ionoData?.method === 'no-coverage') {
+      console.log('[Propagation] No ionosonde coverage -', ionoData.reason);
     }
     
     const bands = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
     const bandFreqs = [1.8, 3.5, 7, 10, 14, 18, 21, 24, 28, 50];
     const currentHour = new Date().getUTCHours();
     
-    // Generate 24-hour predictions
+    // Generate 24-hour predictions (use null for ionoData if no valid coverage)
+    const effectiveIonoData = hasValidIonoData ? ionoData : null;
     const predictions = {};
     
     bands.forEach((band, idx) => {
@@ -1813,7 +1843,7 @@ app.get('/api/propagation', async (req, res) => {
       
       for (let hour = 0; hour < 24; hour++) {
         const reliability = calculateEnhancedReliability(
-          freq, distance, midLat, midLon, hour, sfi, ssn, kIndex, de, dx, ionoData, currentHour
+          freq, distance, midLat, midLon, hour, sfi, ssn, kIndex, de, dx, effectiveIonoData, currentHour
         );
         predictions[band].push({
           hour,
@@ -1833,26 +1863,43 @@ app.get('/api/propagation', async (req, res) => {
     })).sort((a, b) => b.reliability - a.reliability);
     
     // Calculate current MUF and LUF
-    const currentMuf = calculateMUF(distance, midLat, midLon, currentHour, sfi, ssn, ionoData);
+    const currentMuf = calculateMUF(distance, midLat, midLon, currentHour, sfi, ssn, effectiveIonoData);
     const currentLuf = calculateLUF(distance, midLat, currentHour, sfi, kIndex);
     
-    res.json({
-      solarData: { sfi, ssn, kIndex },
-      ionospheric: ionoData ? {
+    // Build ionospheric response
+    let ionosphericResponse;
+    if (hasValidIonoData) {
+      ionosphericResponse = {
         foF2: ionoData.foF2?.toFixed(2),
         mufd: ionoData.mufd?.toFixed(1),
         hmF2: ionoData.hmF2?.toFixed(0),
         source: ionoData.nearestStation || ionoData.source,
+        distance: ionoData.nearestDistance,
         method: ionoData.method,
         stationsUsed: ionoData.stationsUsed || 1
-      } : { source: 'model', method: 'estimated' },
+      };
+    } else if (ionoData?.method === 'no-coverage') {
+      ionosphericResponse = {
+        source: 'No ionosonde coverage',
+        reason: ionoData.reason,
+        nearestStation: ionoData.nearestStation,
+        nearestDistance: ionoData.nearestDistance,
+        method: 'estimated'
+      };
+    } else {
+      ionosphericResponse = { source: 'model', method: 'estimated' };
+    }
+    
+    res.json({
+      solarData: { sfi, ssn, kIndex },
+      ionospheric: ionosphericResponse,
       muf: Math.round(currentMuf * 10) / 10,
       luf: Math.round(currentLuf * 10) / 10,
       distance: Math.round(distance),
       currentHour,
       currentBands,
       hourlyPredictions: predictions,
-      dataSource: ionoData ? 'KC2G/GIRO Ionosonde Network' : 'Estimated from solar indices'
+      dataSource: hasValidIonoData ? 'KC2G/GIRO Ionosonde Network' : 'Estimated from solar indices'
     });
     
   } catch (error) {
