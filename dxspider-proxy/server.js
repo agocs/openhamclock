@@ -96,11 +96,37 @@ const parseSpotLine = (line) => {
     else if (upperComment.includes('FM')) mode = 'FM';
     else if (upperComment.includes('AM')) mode = 'AM';
     
+    // Extract grid squares from comment
+    // Pattern: Look for 4 or 6 char grids, possibly in format "GRID1<>GRID2" or "GRID1->GRID2"
+    let spotterGrid = null;
+    let dxGrid = null;
+    
+    // Check for dual grid format: FN20<>EM79 or FN20->EM79 or FN20/EM79
+    const dualGridMatch = comment.match(/\b([A-R]{2}[0-9]{2}(?:[A-X]{2})?)\s*(?:<>|->|\/|<)\s*([A-R]{2}[0-9]{2}(?:[A-X]{2})?)\b/i);
+    if (dualGridMatch) {
+      spotterGrid = dualGridMatch[1].toUpperCase();
+      dxGrid = dualGridMatch[2].toUpperCase();
+    } else {
+      // Look for single grid - assume it's the DX station
+      const singleGridMatch = comment.match(/\b([A-R]{2}[0-9]{2}(?:[A-X]{2})?)\b/i);
+      if (singleGridMatch) {
+        const grid = singleGridMatch[1].toUpperCase();
+        // Validate it's a real grid (not something like "CQ00")
+        const firstChar = grid.charCodeAt(0);
+        const secondChar = grid.charCodeAt(1);
+        if (firstChar >= 65 && firstChar <= 82 && secondChar >= 65 && secondChar <= 82) {
+          dxGrid = grid;
+        }
+      }
+    }
+    
     return {
       spotter,
+      spotterGrid,
       freq: (freqKhz / 1000).toFixed(3), // Convert kHz to MHz string
       freqKhz,
       call: dxCall,
+      dxGrid,
       comment,
       time,
       mode,

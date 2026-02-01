@@ -699,6 +699,87 @@ app.get('/api/dxcluster/sources', (req, res) => {
 // Returns spots from the last 5 minutes with spotter and DX locations
 // ============================================
 
+// Cache for callsign grid lookups
+const gridLookupCache = new Map();
+const GRID_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+// Look up grid square for a callsign from HamQTH
+async function lookupCallsignGrid(callsign) {
+  // Check cache first
+  const cached = gridLookupCache.get(callsign);
+  if (cached && (Date.now() - cached.timestamp) < GRID_CACHE_TTL) {
+    return cached.grid;
+  }
+  
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    
+    const response = await fetch(`https://www.hamqth.com/dxcc.php?callsign=${callsign}`, {
+      headers: { 'User-Agent': 'OpenHamClock/3.7' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    
+    if (response.ok) {
+      const text = await response.text();
+      // Look for grid in response - format varies but often contains grid square
+      const gridMatch = text.match(/grid[:\s]*([A-R]{2}[0-9]{2}(?:[A-X]{2})?)/i);
+      if (gridMatch) {
+        const grid = gridMatch[1].toUpperCase();
+        gridLookupCache.set(callsign, { grid, timestamp: Date.now() });
+        return grid;
+      }
+      // Also try looking for locator
+      const locatorMatch = text.match(/locator[:\s]*([A-R]{2}[0-9]{2}(?:[A-X]{2})?)/i);
+      if (locatorMatch) {
+        const grid = locatorMatch[1].toUpperCase();
+        gridLookupCache.set(callsign, { grid, timestamp: Date.now() });
+        return grid;
+      }
+    }
+  } catch (err) {
+    // Silently fail - we'll fall back to prefix
+  }
+  
+  // Cache null result to avoid repeated lookups
+  gridLookupCache.set(callsign, { grid: null, timestamp: Date.now() });
+  return null;
+}
+
+// Batch lookup grids for multiple callsigns (with rate limiting)
+async function batchLookupGrids(callsigns, maxLookups = 10) {
+  const results = {};
+  let lookupCount = 0;
+  
+  for (const call of callsigns) {
+    // Check cache first (doesn't count toward limit)
+    const cached = gridLookupCache.get(call);
+    if (cached && (Date.now() - cached.timestamp) < GRID_CACHE_TTL) {
+      if (cached.grid) {
+        results[call] = cached.grid;
+      }
+      continue;
+    }
+    
+    // Only do actual lookups up to the limit
+    if (lookupCount >= maxLookups) continue;
+    
+    const grid = await lookupCallsignGrid(call);
+    if (grid) {
+      results[call] = grid;
+    }
+    lookupCount++;
+    
+    // Small delay between lookups
+    if (lookupCount < maxLookups) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  
+  return results;
+}
+
 // Cache for DX spot paths to avoid excessive lookups
 let dxSpotPathsCache = { paths: [], allPaths: [], timestamp: 0 };
 const DXPATHS_CACHE_TTL = 5000; // 5 seconds cache between fetches
@@ -732,7 +813,9 @@ app.get('/api/dxcluster/paths', async (req, res) => {
           usedSource = 'proxy';
           newSpots = proxyData.spots.map(s => ({
             spotter: s.spotter,
+            spotterGrid: s.spotterGrid || null,
             dxCall: s.call,
+            dxGrid: s.dxGrid || null,
             freq: s.freq,
             comment: s.comment || '',
             time: s.time || '',
@@ -770,9 +853,14 @@ app.get('/api/dxcluster/paths', async (req, res) => {
             
             if (!spotter || !dxCall || freqKhz <= 0) continue;
             
+            // Extract grids from comment for HamQTH data too
+            const grids = extractGridsFromComment(comment);
+            
             newSpots.push({
               spotter,
+              spotterGrid: grids.spotterGrid,
               dxCall,
+              dxGrid: grids.dxGrid,
               freq: (freqKhz / 1000).toFixed(3),
               comment,
               time: timeDate.length >= 4 ? timeDate.substring(0, 2) + ':' + timeDate.substring(2, 4) + 'z' : '',
@@ -801,9 +889,9 @@ app.get('/api/dxcluster/paths', async (req, res) => {
       allCalls.add(s.dxCall);
     });
     
-    // Look up locations for all callsigns (fallback)
+    // Look up prefix-based locations for all callsigns (fallback)
     const prefixLocations = {};
-    const callsToLookup = [...allCalls].slice(0, 60);
+    const callsToLookup = [...allCalls].slice(0, 100);
     
     for (const call of callsToLookup) {
       const loc = estimateLocationFromPrefix(call);
@@ -812,29 +900,111 @@ app.get('/api/dxcluster/paths', async (req, res) => {
       }
     }
     
-    // Build new paths with locations - try grid from comment first
+    // Batch lookup grids from HamQTH for callsigns we don't have grids for yet
+    // Prioritize spotters since they rarely have grids in comments
+    const callsNeedingGridLookup = [];
+    newSpots.forEach(s => {
+      // Add spotter if no grid from proxy/comment
+      if (!s.spotterGrid) {
+        const extracted = extractGridsFromComment(s.comment);
+        if (!extracted.spotterGrid) {
+          callsNeedingGridLookup.push(s.spotter);
+        }
+      }
+      // Add DX call if no grid from proxy/comment  
+      if (!s.dxGrid) {
+        const extracted = extractGridsFromComment(s.comment);
+        if (!extracted.dxGrid) {
+          callsNeedingGridLookup.push(s.dxCall);
+        }
+      }
+    });
+    
+    // Look up grids (limited to avoid rate limiting)
+    const uniqueCallsForLookup = [...new Set(callsNeedingGridLookup)].slice(0, 20);
+    const lookedUpGrids = await batchLookupGrids(uniqueCallsForLookup, 15);
+    console.log('[DX Paths] Looked up', Object.keys(lookedUpGrids).length, 'grids from', uniqueCallsForLookup.length, 'callsigns');
+    
+    // Build new paths with locations - try grid first, fall back to prefix
     const newPaths = newSpots
       .map(spot => {
-        // Try to extract grid from comment for DX station location
-        const dxGrid = extractGridFromComment(spot.comment);
+        // DX station location - try grid from spot data first, then comment, then lookup, then prefix
         let dxLoc = null;
         let dxGridSquare = null;
         
-        if (dxGrid) {
-          const gridLoc = maidenheadToLatLon(dxGrid);
+        // Check if spot already has dxGrid from proxy
+        if (spot.dxGrid) {
+          const gridLoc = maidenheadToLatLon(spot.dxGrid);
           if (gridLoc) {
             dxLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
-            dxGridSquare = dxGrid;
+            dxGridSquare = spot.dxGrid;
           }
         }
         
-        // Fall back to prefix location if no grid
+        // If no grid yet, try extracting from comment
+        if (!dxLoc && spot.comment) {
+          const extractedGrids = extractGridsFromComment(spot.comment);
+          if (extractedGrids.dxGrid) {
+            const gridLoc = maidenheadToLatLon(extractedGrids.dxGrid);
+            if (gridLoc) {
+              dxLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
+              dxGridSquare = extractedGrids.dxGrid;
+            }
+          }
+        }
+        
+        // Try looked up grid
+        if (!dxLoc && lookedUpGrids[spot.dxCall]) {
+          const gridLoc = maidenheadToLatLon(lookedUpGrids[spot.dxCall]);
+          if (gridLoc) {
+            dxLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
+            dxGridSquare = lookedUpGrids[spot.dxCall];
+          }
+        }
+        
+        // Fall back to prefix location
         if (!dxLoc) {
           dxLoc = prefixLocations[spot.dxCall];
         }
         
-        // Spotter location from prefix (usually no grid available)
-        const spotterLoc = prefixLocations[spot.spotter];
+        // Spotter location - try grid first, then lookup, then prefix
+        let spotterLoc = null;
+        let spotterGridSquare = null;
+        
+        // Check if spot already has spotterGrid from proxy
+        if (spot.spotterGrid) {
+          const gridLoc = maidenheadToLatLon(spot.spotterGrid);
+          if (gridLoc) {
+            spotterLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
+            spotterGridSquare = spot.spotterGrid;
+          }
+        }
+        
+        // If no grid yet, try extracting from comment (in case of dual grid format)
+        if (!spotterLoc && spot.comment) {
+          const extractedGrids = extractGridsFromComment(spot.comment);
+          if (extractedGrids.spotterGrid) {
+            const gridLoc = maidenheadToLatLon(extractedGrids.spotterGrid);
+            if (gridLoc) {
+              spotterLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
+              spotterGridSquare = extractedGrids.spotterGrid;
+            }
+          }
+        }
+        
+        // Try looked up grid for spotter
+        if (!spotterLoc && lookedUpGrids[spot.spotter]) {
+          const gridLoc = maidenheadToLatLon(lookedUpGrids[spot.spotter]);
+          if (gridLoc) {
+            spotterLoc = { lat: gridLoc.lat, lon: gridLoc.lon, country: '', source: 'grid' };
+            spotterGridSquare = lookedUpGrids[spot.spotter];
+          }
+        }
+        
+        // Fall back to prefix location for spotter
+        if (!spotterLoc) {
+          spotterLoc = prefixLocations[spot.spotter];
+        }
         
         if (spotterLoc && dxLoc) {
           return {
@@ -842,6 +1012,7 @@ app.get('/api/dxcluster/paths', async (req, res) => {
             spotterLat: spotterLoc.lat,
             spotterLon: spotterLoc.lon,
             spotterCountry: spotterLoc.country || '',
+            spotterGrid: spotterGridSquare,
             spotterLocSource: spotterLoc.source,
             dxCall: spot.dxCall,
             dxLat: dxLoc.lat,
@@ -996,26 +1167,59 @@ function maidenheadToLatLon(grid) {
   return { lat, lon, grid };
 }
 
-// Try to extract a grid locator from a comment string
-function extractGridFromComment(comment) {
-  if (!comment || typeof comment !== 'string') return null;
+// Try to extract grid locators from a comment string
+// Returns { spotterGrid, dxGrid } - may have one, both, or neither
+function extractGridsFromComment(comment) {
+  if (!comment || typeof comment !== 'string') return { spotterGrid: null, dxGrid: null };
   
-  // Look for 4 or 6 character grid squares (most common)
-  // Pattern: 2 letters + 2 digits + optional 2 letters
-  const match = comment.match(/\b([A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2})?)\b/);
-  
-  if (match) {
-    const grid = match[1].toUpperCase();
-    // Validate it's a reasonable grid (not something like "CQ00" or "DE12")
-    const firstChar = grid.charCodeAt(0);
-    const secondChar = grid.charCodeAt(1);
-    // First char should be A-R, second char should be A-R
-    if (firstChar >= 65 && firstChar <= 82 && secondChar >= 65 && secondChar <= 82) {
-      return grid;
+  // Check for dual grid format: FN20<>EM79 or FN20->EM79 or FN20/EM79
+  const dualGridMatch = comment.match(/\b([A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2})?)\s*(?:<>|->|\/|<)\s*([A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2})?)\b/);
+  if (dualGridMatch) {
+    const grid1 = dualGridMatch[1].toUpperCase();
+    const grid2 = dualGridMatch[2].toUpperCase();
+    // Validate both are real grids
+    if (isValidGrid(grid1) && isValidGrid(grid2)) {
+      return { spotterGrid: grid1, dxGrid: grid2 };
     }
   }
   
-  return null;
+  // Look for all grids in the comment
+  const gridPattern = /\b([A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2})?)\b/g;
+  const grids = [];
+  let match;
+  while ((match = gridPattern.exec(comment)) !== null) {
+    const grid = match[1].toUpperCase();
+    if (isValidGrid(grid)) {
+      grids.push(grid);
+    }
+  }
+  
+  // If we found two grids, assume first is spotter, second is DX
+  if (grids.length >= 2) {
+    return { spotterGrid: grids[0], dxGrid: grids[1] };
+  }
+  
+  // If we found one grid, assume it's the DX station
+  if (grids.length === 1) {
+    return { spotterGrid: null, dxGrid: grids[0] };
+  }
+  
+  return { spotterGrid: null, dxGrid: null };
+}
+
+// Validate a grid square is realistic (not "CQ00", "DE12", etc)
+function isValidGrid(grid) {
+  if (!grid || grid.length < 4) return false;
+  const firstChar = grid.charCodeAt(0);
+  const secondChar = grid.charCodeAt(1);
+  // First char should be A-R, second char should be A-R
+  return firstChar >= 65 && firstChar <= 82 && secondChar >= 65 && secondChar <= 82;
+}
+
+// Legacy single-grid extraction (kept for compatibility)
+function extractGridFromComment(comment) {
+  const grids = extractGridsFromComment(comment);
+  return grids.dxGrid;
 }
 
 // Estimate location from callsign prefix (fallback)
