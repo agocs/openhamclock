@@ -36,9 +36,9 @@ if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-// HF band frequencies (MHz)
+// HF band frequencies (MHz) - P.533 valid range is 2-30 MHz
 const HF_BANDS = {
-  '160m': 1.9,
+  '160m': 2.0,    // Adjusted from 1.9 to meet P.533 minimum of 2 MHz
   '80m': 3.5,
   '60m': 5.3,
   '40m': 7.1,
@@ -47,8 +47,8 @@ const HF_BANDS = {
   '17m': 18.1,
   '15m': 21.1,
   '12m': 24.9,
-  '10m': 28.1,
-  '6m': 50.1
+  '10m': 28.1
+  // Note: 6m (50 MHz) excluded - outside P.533 HF range (2-30 MHz)
 };
 
 /**

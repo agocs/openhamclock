@@ -23,44 +23,38 @@ RUN curl -L -o ITURHFProp "https://github.com/ITU-R-Study-Group-3/ITU-R-HF/relea
     && curl -L -o libp372.so "https://github.com/ITU-R-Study-Group-3/ITU-R-HF/releases/download/v14.3/libp372.so" \
     && chmod +x ITURHFProp
 
-# Download source to get Data files - try ITU first, then GitHub source
-RUN curl -L -o itu-hf.zip "https://www.itu.int/en/ITU-R/study-groups/rsg3/rwp3m/Software%20Products/ITU-R-HF_14.3.zip" 2>/dev/null || true \
-    && if [ -f itu-hf.zip ] && [ $(stat -c%s itu-hf.zip) -gt 1000000 ]; then \
-        echo "=== Using ITU download ===" && unzip -o itu-hf.zip; \
-    else \
-        echo "=== ITU download failed, using GitHub source ===" && \
-        curl -L -o source.tar.gz "https://github.com/ITU-R-Study-Group-3/ITU-R-HF/archive/refs/tags/v14.3.tar.gz" && \
-        tar -xzf source.tar.gz; \
-    fi \
-    && echo "=== Top level contents ===" \
-    && ls -la \
-    && echo "=== All directories ===" \
-    && find . -type d | head -30 \
-    && echo "=== All .bin files ===" \
-    && find . -name "*.bin" \
-    && echo "=== All .ant files ===" \
-    && find . -name "*.ant" \
-    && echo "=== All COEFF files ===" \
-    && find . -name "COEFF*.BIN" | head -5
+# Download GitHub source (more reliable than ITU)
+RUN curl -L -o source.tar.gz "https://github.com/ITU-R-Study-Group-3/ITU-R-HF/archive/refs/tags/v14.3.tar.gz" \
+    && tar -xzf source.tar.gz \
+    && echo "=== Source structure ===" \
+    && ls -la ITU-R-HF-14.3/ \
+    && echo "=== P533 structure ===" \
+    && ls -la ITU-R-HF-14.3/P533/ 2>/dev/null || echo "No P533 dir" \
+    && echo "=== Finding ALL required files ===" \
+    && find ITU-R-HF-14.3 -name "ionos*.bin" -type f \
+    && find ITU-R-HF-14.3 -name "*.ant" -type f \
+    && find ITU-R-HF-14.3 -name "COEFF01W.BIN" -type f
 
-# Copy Data directory from wherever it is, or build it from individual files
-RUN mkdir -p /opt/iturhfprop/Data && \
-    DATA_DIR=$(find . -type d -name "Data" | grep -v "\.git" | head -1) && \
-    if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ]; then \
-        echo "Found Data at: $DATA_DIR" && \
-        cp -r "$DATA_DIR"/* /opt/iturhfprop/Data/ 2>/dev/null || true; \
-    fi && \
-    echo "=== Copying all data files to Data/ ===" && \
-    find . -name "COEFF*.BIN" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    find . -name "COEFF*.txt" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    find . -name "ionos*.bin" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    find . -name "*.ant" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    find . -name "P1239*.txt" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    find . -name "P372*.txt" -exec cp {} /opt/iturhfprop/Data/ \; 2>/dev/null || true && \
-    echo "=== Final Data contents ===" && ls -la /opt/iturhfprop/Data/ | head -30
+# Create Data directory and copy ALL required files explicitly
+RUN mkdir -p /opt/iturhfprop/Data \
+    && echo "=== Copying COEFF files ===" \
+    && find ITU-R-HF-14.3 -name "COEFF*.BIN" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; \
+    && find ITU-R-HF-14.3 -name "COEFF*.txt" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; \
+    && echo "=== Copying ionospheric data ===" \
+    && find ITU-R-HF-14.3 -name "ionos*.bin" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; \
+    && echo "=== Copying antenna files ===" \
+    && find ITU-R-HF-14.3 -name "*.ant" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; \
+    && echo "=== Copying other data files ===" \
+    && find ITU-R-HF-14.3 -name "P1239*.txt" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; 2>/dev/null || true \
+    && find ITU-R-HF-14.3 -name "P372*.txt" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; 2>/dev/null || true \
+    && find ITU-R-HF-14.3 -name "anthr.dat" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; 2>/dev/null || true \
+    && find ITU-R-HF-14.3 -name "*.csv" -type f -exec cp -v {} /opt/iturhfprop/Data/ \; 2>/dev/null || true \
+    && echo "=== Final Data directory ===" \
+    && ls -la /opt/iturhfprop/Data/ \
+    && echo "=== File count: $(ls -1 /opt/iturhfprop/Data/ | wc -l) ==="
 
-# Cleanup downloaded archives
-RUN rm -rf ITU-R-HF* itu-hf.zip source.tar.gz P533 *.exe *.dll 2>/dev/null || true
+# Cleanup
+RUN rm -rf ITU-R-HF-14.3 source.tar.gz
 
 # Set library path so ITURHFProp can find shared libs
 ENV LD_LIBRARY_PATH=/opt/iturhfprop:$LD_LIBRARY_PATH
