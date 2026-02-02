@@ -224,6 +224,25 @@ The backend server provides:
 
 ## 🚀 Deployment
 
+### Raspberry Pi
+
+One-line install for Raspberry Pi:
+```bash
+curl -sSL https://raw.githubusercontent.com/k0cjh/openhamclock/main/scripts/setup-pi.sh | bash
+```
+
+Or with kiosk mode (auto-starts fullscreen on boot):
+```bash
+curl -sSL https://raw.githubusercontent.com/k0cjh/openhamclock/main/scripts/setup-pi.sh | bash -s -- --kiosk
+```
+
+After installation:
+```bash
+cd ~/openhamclock
+nano .env  # Edit your callsign and locator
+./restart.sh
+```
+
 ### Railway
 ```bash
 # railway.toml and railway.json are included
@@ -240,6 +259,34 @@ docker-compose up -d
 npm run build
 NODE_ENV=production node server.js
 ```
+
+## 🔄 Updating
+
+For local/Pi installations, use the update script:
+
+```bash
+cd ~/openhamclock
+./scripts/update.sh
+```
+
+The update script will:
+1. ✅ Back up your `.env` configuration
+2. ✅ Pull the latest code from GitHub
+3. ✅ Install any new dependencies
+4. ✅ Rebuild the frontend
+5. ✅ Preserve your settings
+
+Then restart the server:
+```bash
+sudo systemctl restart openhamclock
+# or
+./restart.sh
+```
+
+**Note:** If you installed from a zip file (not git clone), you'll need to:
+1. Back up your `.env` file
+2. Download the new zip
+3. Extract and restore your `.env`
 
 ## 🤝 Contributing
 
