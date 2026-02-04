@@ -497,6 +497,19 @@ export function useLayer({ enabled = false, opacity = 0.7, map = null }) {
     setTimeout(() => {
       const container = document.querySelector('.wspr-filter-control');
       if (container) {
+        // Apply saved position IMMEDIATELY before making draggable
+        const saved = localStorage.getItem('wspr-filter-position');
+        if (saved) {
+          try {
+            const { top, left } = JSON.parse(saved);
+            container.style.position = 'fixed';
+            container.style.top = top + 'px';
+            container.style.left = left + 'px';
+            container.style.right = 'auto';
+            container.style.bottom = 'auto';
+          } catch (e) {}
+        }
+        
         makeDraggable(container, 'wspr-filter-position');
         addMinimizeToggle(container, 'wspr-filter-position');
       }
@@ -582,6 +595,19 @@ export function useLayer({ enabled = false, opacity = 0.7, map = null }) {
     setTimeout(() => {
       const container = document.querySelector('.wspr-stats');
       if (container) {
+        // Apply saved position IMMEDIATELY before making draggable
+        const saved = localStorage.getItem('wspr-stats-position');
+        if (saved) {
+          try {
+            const { top, left } = JSON.parse(saved);
+            container.style.position = 'fixed';
+            container.style.top = top + 'px';
+            container.style.left = left + 'px';
+            container.style.right = 'auto';
+            container.style.bottom = 'auto';
+          } catch (e) {}
+        }
+        
         makeDraggable(container, 'wspr-stats-position');
         addMinimizeToggle(container, 'wspr-stats-position');
       }
@@ -623,6 +649,19 @@ export function useLayer({ enabled = false, opacity = 0.7, map = null }) {
     setTimeout(() => {
       const container = document.querySelector('.wspr-legend');
       if (container) {
+        // Apply saved position IMMEDIATELY before making draggable
+        const saved = localStorage.getItem('wspr-legend-position');
+        if (saved) {
+          try {
+            const { top, left } = JSON.parse(saved);
+            container.style.position = 'fixed';
+            container.style.top = top + 'px';
+            container.style.left = left + 'px';
+            container.style.right = 'auto';
+            container.style.bottom = 'auto';
+          } catch (e) {}
+        }
+        
         makeDraggable(container, 'wspr-legend-position');
         addMinimizeToggle(container, 'wspr-legend-position');
       }
@@ -656,6 +695,19 @@ export function useLayer({ enabled = false, opacity = 0.7, map = null }) {
     setTimeout(() => {
       const container = document.querySelector('.wspr-chart');
       if (container) {
+        // Apply saved position IMMEDIATELY before making draggable
+        const saved = localStorage.getItem('wspr-chart-position');
+        if (saved) {
+          try {
+            const { top, left } = JSON.parse(saved);
+            container.style.position = 'fixed';
+            container.style.top = top + 'px';
+            container.style.left = left + 'px';
+            container.style.right = 'auto';
+            container.style.bottom = 'auto';
+          } catch (e) {}
+        }
+        
         makeDraggable(container, 'wspr-chart-position');
         addMinimizeToggle(container, 'wspr-chart-position');
       }
