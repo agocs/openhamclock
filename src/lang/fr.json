@@ -1,4 +1,6 @@
 {
+  "app.settings": "⚙ Paramètres",
+  "app.callsign": "Cliquez sur la carte pour définir le DX • 73 de {{callsign}}",
   "band.conditions": "CONDITION DE LA BANDE",
   "band.conditions.good": "BONNE",
   "band.conditions.fair": "MOYENNE",
@@ -9,7 +11,7 @@
   "contest.panel.calendar": "Calendrier des concours WA7BNM",
   "cancel": "Annuler",
   "station.settings.language": "Langue",
-  "station.settings.language.en": "English",
+  "station.settings.language.en": "Anglais",
   "station.settings.language.fr": "Français",
   "station.settings.language.es": "Español",
   "station.settings.language.de": "Deutsch",

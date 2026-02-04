@@ -1,4 +1,6 @@
 {
+  "app.settings": "⚙ Settings",
+  "app.callsign": "Click map to set DX • 73 de {{callsign}}",
   "band.conditions": "⌇ BAND CONDITIONS",
   "band.conditions.good": "GOOD",
   "band.conditions.fair": "FAIR",
