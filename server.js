@@ -2282,6 +2282,11 @@ function fetchRBNSpotsRealtime(userCallsign, collectSeconds = 10, port = 7000) {
       dataBuffer = lines.pop() || ''; // Keep incomplete line in buffer
       
       for (const line of lines) {
+        // Debug: log raw lines
+        if (line.trim()) {
+          console.log(`[RBN] Raw: ${line.substring(0, 100)}`);
+        }
+        
         // Handle authentication prompt
         if (line.includes('Please enter your call:') && !authenticated) {
           client.write(`${userCallsign}\n`);
@@ -2296,6 +2301,7 @@ function fetchRBNSpotsRealtime(userCallsign, collectSeconds = 10, port = 7000) {
         
         if (spotMatch) {
           const [, skimmer, freq, dx, mode, snr, wpm] = spotMatch;
+          console.log(`[RBN] Parsed spot: ${dx} heard by ${skimmer} on ${freq} MHz, ${snr} dB`);
           
           const timestamp = Date.now();
           const freqNum = parseFloat(freq) * 1000; // Convert to Hz
