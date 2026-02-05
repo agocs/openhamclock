@@ -239,36 +239,16 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
   const [proximityControl, setProximityControl] = useState(null);
   const [wsKey, setWsKey] = useState(null);
   const [thunderCircles, setThunderCircles] = useState([]);
-  const wsRefs = useRef([]); // Multiple WebSocket connections
+  const wsRef = useRef(null); // Single WebSocket connection
   const reconnectTimerRef = useRef(null);
   const strikesBufferRef = useRef([]);
   const previousStrikeIds = useRef(new Set());
 
-  // Fetch WebSocket key from Blitzortung
+  // Fetch WebSocket key from Blitzortung (fallback to 111)
   useEffect(() => {
-    const fetchKey = async () => {
-      try {
-        console.log('[Lightning] Fetching WebSocket key from Blitzortung...');
-        const response = await fetch('https://www.blitzortung.org/en/JS/live_lightning_maps.js');
-        const script = await response.text();
-        const match = script.match(/var key=\s*(\d+)/);
-        if (match && match[1]) {
-          const key = parseInt(match[1]);
-          console.log('[Lightning] WebSocket key:', key);
-          setWsKey(key);
-        } else {
-          console.warn('[Lightning] Could not extract WebSocket key, using fallback');
-          setWsKey(111); // Fallback key
-        }
-      } catch (err) {
-        console.error('[Lightning] Error fetching WebSocket key:', err);
-        setWsKey(111); // Fallback key
-      }
-    };
-
     if (enabled && !wsKey) {
-      console.log('[Lightning] Plugin enabled, fetching WebSocket key...');
-      fetchKey();
+      console.log('[Lightning] Using WebSocket key 111 (Blitzortung standard)');
+      setWsKey(111); // Standard Blitzortung key
     }
   }, [enabled, wsKey]);
 
