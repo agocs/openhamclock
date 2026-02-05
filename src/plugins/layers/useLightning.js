@@ -236,7 +236,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
   const [strikeMarkers, setStrikeMarkers] = useState([]);
   const [lightningData, setLightningData] = useState([]);
   const [statsControl, setStatsControl] = useState(null);
-  const [proximityControl, setProximityControl] = useState(null);
+  const proximityControlRef = useRef(null); // Use ref instead of state to avoid re-renders
   const [wsKey, setWsKey] = useState(null);
   const [thunderCircles, setThunderCircles] = useState([]);
   const wsRef = useRef(null); // Single WebSocket connection
@@ -755,7 +755,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
 
   // Create proximity panel control (30km radius)
   useEffect(() => {
-    console.log('[Lightning] Proximity effect triggered - enabled:', enabled, 'map:', !!map, 'proximityControl:', !!proximityControl);
+    console.log('[Lightning] Proximity effect triggered - enabled:', enabled, 'map:', !!map, 'proximityControl:', !!proximityControlRef.current);
     
     if (!map || typeof L === 'undefined') {
       console.log('[Lightning] Proximity: No map or Leaflet');
@@ -765,7 +765,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
       console.log('[Lightning] Proximity: Not enabled');
       return;
     }
-    if (proximityControl) {
+    if (proximityControlRef.current) {
       console.log('[Lightning] Proximity: Already exists, skipping');
       return; // Already created
     }
@@ -866,14 +866,14 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
         addMinimizeToggle(container, 'lightning-proximity-position');
         console.log('[Lightning] Proximity: Panel is now draggable and minimizable');
         
-        // IMPORTANT: Set state AFTER setup is complete to prevent re-render during creation
-        setProximityControl(control);
-        console.log('[Lightning] Proximity: State updated with control');
+        // IMPORTANT: Set ref AFTER setup is complete
+        proximityControlRef.current = control;
+        console.log('[Lightning] Proximity: Ref updated with control');
       } else if (retries >= maxRetries) {
         clearInterval(retryInterval);
         console.error('[Lightning] Proximity: Container NOT FOUND after 20 retries!');
-        // Still set state even if container not found to prevent infinite recreation
-        setProximityControl(control);
+        // Still set ref even if container not found to prevent infinite recreation
+        proximityControlRef.current = control;
       }
     }, 100);
 
@@ -885,11 +885,11 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
         } catch (e) {}
       }
     };
-  }, [map, enabled, proximityControl]); // Add proximityControl to prevent recreation
+  }, [map, enabled]); // No state dependency - using ref instead
 
   // Update proximity panel content
   useEffect(() => {
-    if (!proximityControl) return;
+    if (!proximityControlRef.current) return;
 
     const div = document.querySelector('.lightning-proximity');
     if (!div) return;
@@ -977,7 +977,7 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
       tempDiv.innerHTML = contentHTML;
       Array.from(tempDiv.children).forEach(child => div.appendChild(child));
     }
-  }, [proximityControl, enabled, lightningData]);
+  }, [enabled, lightningData]); // No proximityControl dependency - using ref
 
   return null; // Plugin-only - no data export
 }
