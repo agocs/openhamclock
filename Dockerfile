@@ -35,6 +35,9 @@ RUN addgroup -g 1001 -S nodejs && \
 
 WORKDIR /app
 
+# Create /data directory for persistent stats (Railway volume mount point)
+RUN mkdir -p /data && chown openhamclock:nodejs /data
+
 # Copy package files and install production deps only
 COPY package*.json ./
 RUN npm install --omit=dev
@@ -42,6 +45,8 @@ RUN npm install --omit=dev
 # Copy server files
 COPY server.js ./
 COPY config.js ./
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 # Copy WSJT-X relay agent (served as download to users)
 COPY wsjtx-relay ./wsjtx-relay
@@ -52,8 +57,11 @@ COPY --from=builder /app/dist ./dist
 # Copy public folder (for monolithic fallback reference)
 COPY public ./public
 
-# Set ownership
-RUN chown -R openhamclock:nodejs /app
+# Create local data directory as fallback
+RUN mkdir -p /app/data
+
+# Set ownership of everything
+RUN chown -R openhamclock:nodejs /app /data
 
 # Switch to non-root user
 USER openhamclock
@@ -66,5 +74,5 @@ EXPOSE 2237/udp
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
-# Start server
-CMD ["node", "server.js"]
+# Use entrypoint script for permission handling
+ENTRYPOINT ["./docker-entrypoint.sh"]

@@ -277,26 +277,41 @@ function logErrorOnce(category, message) {
 function getStatsFilePath() {
   // If explicitly set via env var, use that
   if (process.env.STATS_FILE) {
+    console.log(`[Stats] Using STATS_FILE env var: ${process.env.STATS_FILE}`);
     return process.env.STATS_FILE;
   }
   
-  // Try /data (Railway volume) first - check if writable
-  if (fs.existsSync('/data')) {
+  // List of paths to try in order of preference
+  const pathsToTry = [
+    '/data/stats.json',                           // Railway volume
+    path.join(__dirname, 'data', 'stats.json'),   // Local ./data subdirectory
+    '/tmp/openhamclock-stats.json'                // Temp (won't survive restarts but better than nothing)
+  ];
+  
+  for (const statsPath of pathsToTry) {
     try {
-      const testFile = '/data/.write-test-' + Date.now();
+      const dir = path.dirname(statsPath);
+      
+      // Create directory if it doesn't exist
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      // Test write permission
+      const testFile = path.join(dir, '.write-test-' + Date.now());
       fs.writeFileSync(testFile, 'test');
       fs.unlinkSync(testFile);
-      console.log('[Stats] Using Railway volume: /data/stats.json');
-      return '/data/stats.json';
+      
+      console.log(`[Stats] ✓ Using: ${statsPath}`);
+      return statsPath;
     } catch (err) {
-      console.log('[Stats] /data exists but not writable:', err.message);
+      console.log(`[Stats] ✗ ${statsPath}: ${err.code || err.message}`);
     }
   }
   
-  // Fall back to local data directory
-  const localPath = path.join(__dirname, 'data', 'stats.json');
-  console.log('[Stats] Using local storage:', localPath);
-  return localPath;
+  // No writable path found
+  console.log('[Stats] ⚠ No writable storage found - stats will be memory-only');
+  return null;
 }
 
 const STATS_FILE = getStatsFilePath();
@@ -317,6 +332,12 @@ function loadVisitorStats() {
     history: [],
     lastSaved: null
   };
+  
+  // No stats file configured - memory only mode
+  if (!STATS_FILE) {
+    console.log('[Stats] Running in memory-only mode');
+    return defaults;
+  }
   
   try {
     if (fs.existsSync(STATS_FILE)) {
@@ -351,6 +372,11 @@ function loadVisitorStats() {
 // Save stats to disk
 let saveErrorCount = 0;
 function saveVisitorStats() {
+  // No stats file configured - memory only mode
+  if (!STATS_FILE) {
+    return;
+  }
+  
   try {
     const dir = path.dirname(STATS_FILE);
     if (!fs.existsSync(dir)) {
@@ -363,6 +389,7 @@ function saveVisitorStats() {
     };
     
     fs.writeFileSync(STATS_FILE, JSON.stringify(data, null, 2));
+    visitorStats.lastSaved = data.lastSaved; // Update in-memory too
     saveErrorCount = 0; // Reset on success
     // Only log occasionally to avoid spam
     if (Math.random() < 0.1) {
@@ -5085,7 +5112,7 @@ function generateStatusDashboard() {
       </div>
       <div class="info-row">
         <span class="info-label">Stats Location</span>
-        <span class="info-value" style="font-size: 0.75rem; color: #888">${STATS_FILE}</span>
+        <span class="info-value" style="font-size: 0.75rem; color: #888">${STATS_FILE || 'Memory only (no writable storage)'}</span>
       </div>
       <div class="info-row">
         <span class="info-label">Last Saved</span>
@@ -5127,8 +5154,8 @@ app.get('/api/health', (req, res) => {
       uptimeFormatted: `${Math.floor(process.uptime() / 86400)}d ${Math.floor((process.uptime() % 86400) / 3600)}h ${Math.floor((process.uptime() % 3600) / 60)}m`,
       timestamp: new Date().toISOString(),
       persistence: {
-        enabled: true,
-        file: STATS_FILE,
+        enabled: !!STATS_FILE,
+        file: STATS_FILE || null,
         lastSaved: visitorStats.lastSaved
       },
       visitors: {
