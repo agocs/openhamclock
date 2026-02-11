@@ -176,7 +176,7 @@ export const WorldMap = ({
 		attribution: 'NASA GIBS',
 		noWrap: false,
 		pane: 'nightPane',
-		opacity: nightIntensity, // This applies your saved or default brightness
+		opacity: nightIntensity, // This applies your saved or default brightness when page reloaded
 		zIndex: 1
 	  }).addTo(map);
 
@@ -244,9 +244,6 @@ export const WorldMap = ({
     };
   }, []); // Empty dependency array for initialization
 
-
-
-
   // Update tile layer and handle night light clipping
 
   useEffect(() => {
@@ -258,7 +255,6 @@ export const WorldMap = ({
     if (mapStyle === 'MODIS') { url = getGibsUrl(gibsOffset); }
     tileLayerRef.current.setUrl(url);
 
-    // --- THE FIX: Forces Leaflet to re-validate tiles immediately ---
     // This clears the "map data not yet available" placeholders
     map.invalidateSize({ animate: false }); 
     tileLayerRef.current.redraw(); // Optional: forces a fresh download of the tiles
@@ -267,7 +263,7 @@ export const WorldMap = ({
     tileLayerRef.current.setOpacity(1.0);
     tileLayerRef.current.setZIndex(10);
 
-    // 2. City Lights (Night Layer) - Now using slider state
+    // 2. City Lights (Night Layer) - Using slider state
 	const finalOpacity = mapStyle === 'countries' ? 0 : nightIntensity;
 	nightTileLayerRef.current.setOpacity(finalOpacity);
 	nightTileLayerRef.current.setZIndex(600);
@@ -304,10 +300,8 @@ export const WorldMap = ({
     const maskInterval = setInterval(updateMask, 3000); 
 
     return () => clearInterval(maskInterval);
-}, [mapStyle, gibsOffset, nightIntensity]); // Added gibsOffset so the map refreshes when you move the slider
-  
-  // End code dynamic GIBS generator if 'MODIS' is selected
-
+}, [mapStyle, gibsOffset, nightIntensity]); // Added gibsOffset and night intensity so the map refreshes when you move the slider
+ 
   // Countries overlay for "Countries" map style
   useEffect(() => {
     if (!mapInstanceRef.current) return;
