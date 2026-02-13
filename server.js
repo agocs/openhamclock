@@ -1296,8 +1296,12 @@ async function autoUpdateTick(trigger = 'interval', force = false) {
     logInfo('[Auto Update] Update complete');
 
     if (AUTO_UPDATE_EXIT_AFTER) {
-      logInfo('[Auto Update] Exiting to allow restart');
-      process.exit(0);
+      // Exit with code 75 (EX_TEMPFAIL) — a non-zero code that signals
+      // "restart me" to systemd's Restart=on-failure AND Restart=always.
+      // Previous versions used exit(0) which was clean/success, causing
+      // Restart=on-failure to NOT restart the service.
+      logInfo('[Auto Update] Restarting service (exit 75)...');
+      process.exit(75);
     }
   } catch (err) {
     autoUpdateState.lastResult = 'error';
@@ -2619,6 +2623,57 @@ app.get('/api/dxcluster/paths', async (req, res) => {
       }
     }
     
+    // Check HamQTH callsign cache for better accuracy (24h TTL, populated by /api/callsign/:call)
+    // This gives DXCC-level lat/lon which is more accurate than prefix country centroids
+    const hamqthLocations = {};
+    const hamqthMisses = []; // Callsigns to look up in background
+    for (const call of callsToLookup) {
+      const cached = callsignLookupCache.get(call);
+      if (cached && (now - cached.timestamp) < CALLSIGN_CACHE_TTL && cached.data?.lat != null) {
+        hamqthLocations[call] = {
+          lat: cached.data.lat,
+          lon: cached.data.lon,
+          country: cached.data.country || '',
+          grid: cached.data.grid || null,
+          source: 'hamqth'
+        };
+      } else if (!prefixLocations[call]?.grid) {
+        // Only queue lookups for calls that don't already have grid-level accuracy
+        hamqthMisses.push(call);
+      }
+    }
+    
+    // Fire background HamQTH lookups for cache misses (non-blocking, improves next poll)
+    // Limit to 10 per cycle to avoid hammering HamQTH
+    if (hamqthMisses.length > 0) {
+      const batch = hamqthMisses.slice(0, 10);
+      logDebug('[DX Paths] Background HamQTH lookup for', batch.length, 'callsigns');
+      for (const call of batch) {
+        // Fire-and-forget — results land in callsignLookupCache for next poll
+        fetch(`https://www.hamqth.com/dxcc.php?callsign=${encodeURIComponent(call)}`, {
+          headers: { 'User-Agent': 'OpenHamClock/' + APP_VERSION },
+          signal: AbortSignal.timeout(5000)
+        }).then(async (resp) => {
+          if (!resp.ok) return;
+          const text = await resp.text();
+          const latMatch = text.match(/<lat>([^<]+)<\/lat>/);
+          const lonMatch = text.match(/<lng>([^<]+)<\/lng>/);
+          const countryMatch = text.match(/<n>([^<]+)<\/name>/);
+          if (latMatch && lonMatch) {
+            callsignLookupCache.set(call, {
+              data: {
+                callsign: call,
+                lat: parseFloat(latMatch[1]),
+                lon: parseFloat(lonMatch[1]),
+                country: countryMatch ? countryMatch[1] : ''
+              },
+              timestamp: Date.now()
+            });
+          }
+        }).catch(() => {}); // Silent fail for background lookups
+      }
+    }
+    
     // Build new paths with locations - try grid first, fall back to prefix
     const newPaths = newSpots
       .map(spot => {
@@ -2645,6 +2700,11 @@ app.get('/api/dxcluster/paths', async (req, res) => {
               dxGridSquare = extractedGrids.dxGrid;
             }
           }
+        }
+        
+        // Fall back to HamQTH cached location (more accurate than prefix)
+        if (!dxLoc && hamqthLocations[spot.dxCall]) {
+          dxLoc = hamqthLocations[spot.dxCall];
         }
         
         // Fall back to prefix location (now includes grid-based coordinates!)
@@ -2678,6 +2738,11 @@ app.get('/api/dxcluster/paths', async (req, res) => {
               spotterGridSquare = extractedGrids.spotterGrid;
             }
           }
+        }
+        
+        // Fall back to HamQTH cached location for spotter
+        if (!spotterLoc && hamqthLocations[spot.spotter]) {
+          spotterLoc = hamqthLocations[spot.spotter];
         }
         
         // Fall back to prefix location for spotter (now includes grid-based coordinates!)
@@ -5436,8 +5501,8 @@ app.get('/api/propagation', async (req, res) => {
     }
     
     // ===== FALLBACK: Built-in calculations =====
-    const bands = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '11m', '10m', '6m'];
-    const bandFreqs = [1.8, 3.5, 7, 10, 14, 18, 21, 24, 27, 28, 50];
+    const bands = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m'];
+    const bandFreqs = [1.8, 3.5, 7, 10, 14, 18, 21, 24, 28];
     
     // Generate predictions (hybrid or fallback)
     const effectiveIonoData = hasValidIonoData ? ionoData : null;
@@ -7601,21 +7666,49 @@ function parseWSJTXMessage(buffer) {
  */
 // Callsign → grid cache: remembers grids seen in CQ messages for later QSO exchanges
 const wsjtxGridCache = new Map(); // callsign → { grid, lat, lon, timestamp }
+const wsjtxHamqthInflight = new Set(); // callsigns currently being looked up (prevents duplicate requests)
 
 function parseDecodeMessage(text) {
   if (!text) return {};
   const result = {};
   
-  // Grid square regex: 2 alpha + 2 digits, optionally + 2 lowercase alpha
+  // FT8/FT4 protocol tokens that look like valid Maidenhead grids but aren't
+  // RR73 matches [A-R]{2}\d{2} but is a QSO acknowledgment
+  const FT8_TOKENS = new Set(['RR73', 'RR53', 'RR13', 'RR23', 'RR33', 'RR43', 'RR63', 'RR83', 'RR93']);
+  
+  // Validate grid: must be valid Maidenhead AND not an FT8 protocol token
+  function isGrid(s) {
+    if (!s || s.length < 4) return false;
+    const g = s.toUpperCase();
+    if (FT8_TOKENS.has(g)) return false;
+    return /^[A-R]{2}\d{2}(?:[A-Xa-x]{2})?$/.test(s);
+  }
+  
+  // Grid square regex: 2 alpha (A-R) + 2 digits, optionally + 2 alpha (a-x)
   const gridRegex = /\b([A-R]{2}\d{2}(?:[a-x]{2})?)\b/i;
   
-  // CQ message: "CQ DX K1ABC FN42" or "CQ K1ABC FN42"
-  const cqMatch = text.match(/^CQ\s+(?:(\S+)\s+)?([A-Z0-9/]+)\s+([A-R]{2}\d{2}[a-x]{0,2})?/i);
-  if (cqMatch) {
+  // ── CQ messages ──
+  // Format: "CQ [modifier] CALLSIGN [GRID]"
+  // Examples: "CQ K1ABC FN42", "CQ DX K1ABC FN42", "CQ POTA N0VIG EM28", "CQ K1ABC"
+  if (/^CQ\s/i.test(text)) {
     result.type = 'CQ';
-    result.modifier = cqMatch[1] && !cqMatch[1].match(/^[A-Z0-9/]{3,}$/) ? cqMatch[1] : null;
-    result.caller = cqMatch[2] || cqMatch[1];
-    result.grid = cqMatch[3] || null;
+    const tokens = text.split(/\s+/).slice(1); // drop "CQ"
+    
+    // Work backwards: last token might be a grid
+    let grid = null;
+    if (tokens.length >= 2 && isGrid(tokens[tokens.length - 1])) {
+      grid = tokens.pop();
+    }
+    
+    // Remaining tokens: [modifier] CALLSIGN
+    // The callsign is always the LAST remaining token
+    // Modifiers (DX, POTA, NA, EU, etc.) come before it
+    if (tokens.length >= 1) {
+      result.caller = tokens[tokens.length - 1];
+      result.modifier = tokens.length >= 2 ? tokens.slice(0, -1).join(' ') : null;
+    }
+    
+    result.grid = grid;
     
     // Cache this callsign's grid for future lookups
     if (result.caller && result.grid) {
@@ -7632,24 +7725,23 @@ function parseDecodeMessage(text) {
     return result;
   }
   
-  // Standard QSO exchange: "K1ABC W2DEF +05" or "K1ABC W2DEF R-12" or "K1ABC W2DEF RR73"
-  // or "K1ABC W2DEF EN82" or "K1ABC W2DEF EN82 a7"
-  const qsoMatch = text.match(/^([A-Z0-9/]+)\s+([A-Z0-9/]+)\s+(.*)/i);
+  // ── Standard QSO exchange ──
+  // Format: "DXCALL DECALL EXCHANGE"
+  // Exchange can be: grid (EN82), report (+05, -12, R+05, R-12), 73, RR73, RRR
+  const qsoMatch = text.match(/^([A-Z0-9/<>.]+)\s+([A-Z0-9/<>.]+)\s+(.*)/i);
   if (qsoMatch) {
     result.type = 'QSO';
     result.dxCall = qsoMatch[1];
     result.deCall = qsoMatch[2];
     result.exchange = qsoMatch[3].trim();
     
-    // Look for a grid square ANYWHERE in the exchange text
-    // This handles "EN82", "EN82 a7", "R EN82", etc.
+    // Look for a grid square in the exchange, but NOT FT8 protocol tokens
     const gridMatch = result.exchange.match(gridRegex);
-    if (gridMatch && isValidGrid(gridMatch[1])) {
+    if (gridMatch && isGrid(gridMatch[1])) {
       result.grid = gridMatch[1];
-      // Cache grid for both callsigns involved
+      // Cache grid — in exchange it typically belongs to the calling station (dxCall)
       const coords = gridToLatLon(result.grid);
       if (coords) {
-        // Grid in exchange typically belongs to the calling station (dxCall)
         wsjtxGridCache.set(result.dxCall.toUpperCase(), {
           grid: result.grid,
           lat: coords.latitude,
@@ -7766,6 +7858,43 @@ function handleWSJTXMessage(msg, state) {
             decode.lon = cached.lon;
             decode.grid = decode.grid || cached.grid;
             decode.gridSource = 'cache';
+          }
+        }
+      }
+      
+      // Try HamQTH callsign cache (DXCC-level, more accurate than prefix centroid)
+      if (!decode.lat) {
+        const targetCall = (parsed.caller || parsed.dxCall || '').toUpperCase();
+        if (targetCall) {
+          const cached = callsignLookupCache.get(targetCall);
+          if (cached && (Date.now() - cached.timestamp) < CALLSIGN_CACHE_TTL && cached.data?.lat != null) {
+            decode.lat = cached.data.lat;
+            decode.lon = cached.data.lon;
+            decode.gridSource = 'hamqth';
+          } else if (targetCall.length >= 3 && !wsjtxHamqthInflight.has(targetCall) && wsjtxHamqthInflight.size < 5) {
+            // Background lookup for next cycle (fire-and-forget, max 5 concurrent)
+            wsjtxHamqthInflight.add(targetCall);
+            fetch(`https://www.hamqth.com/dxcc.php?callsign=${encodeURIComponent(targetCall)}`, {
+              headers: { 'User-Agent': 'OpenHamClock/' + APP_VERSION },
+              signal: AbortSignal.timeout(5000)
+            }).then(async (resp) => {
+              if (!resp.ok) return;
+              const text = await resp.text();
+              const latMatch = text.match(/<lat>([^<]+)<\/lat>/);
+              const lonMatch = text.match(/<lng>([^<]+)<\/lng>/);
+              const countryMatch = text.match(/<n>([^<]+)<\/name>/);
+              if (latMatch && lonMatch) {
+                callsignLookupCache.set(targetCall, {
+                  data: {
+                    callsign: targetCall,
+                    lat: parseFloat(latMatch[1]),
+                    lon: parseFloat(lonMatch[1]),
+                    country: countryMatch ? countryMatch[1] : ''
+                  },
+                  timestamp: Date.now()
+                });
+              }
+            }).finally(() => { wsjtxHamqthInflight.delete(targetCall); });
           }
         }
       }
@@ -8681,6 +8810,20 @@ if (N1MM_ENABLED) {
   console.log('');
 
   startAutoUpdateScheduler();
+  
+  // Check for outdated systemd service file that prevents auto-update restart
+  if (AUTO_UPDATE_ENABLED && (process.env.INVOCATION_ID || process.ppid === 1)) {
+    try {
+      const serviceFile = fs.readFileSync('/etc/systemd/system/openhamclock.service', 'utf8');
+      if (serviceFile.includes('Restart=on-failure') && !serviceFile.includes('Restart=always')) {
+        console.log('  ⚠️  Your systemd service file uses Restart=on-failure');
+        console.log('     Auto-updates may not restart properly.');
+        console.log('     Fix: sudo sed -i "s/Restart=on-failure/Restart=always/" /etc/systemd/system/openhamclock.service');
+        console.log('     Then: sudo systemctl daemon-reload');
+        console.log('');
+      }
+    } catch { /* Not running as systemd service, or can't read file — ignore */ }
+  }
 
   // Pre-warm N0NBH cache so solar-indices has current SFI/SSN on first request
   setTimeout(async () => {
