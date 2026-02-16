@@ -28,6 +28,7 @@ const dgram = require('dgram');
 const fs = require('fs');
 const { execFile, spawn } = require('child_process');
 const mqttLib = require('mqtt');
+const { initCtyData, getCtyData, lookupCall } = require('./src/server/ctydat.js');
 
 // Read version from package.json as single source of truth
 const APP_VERSION = (() => {
@@ -39,6 +40,10 @@ const APP_VERSION = (() => {
 
 // Global safety nets — log but don't crash on stray errors (e.g. MQTT connack timeout)
 process.on('uncaughtException', (err) => {
+  // BadRequestError: request aborted — benign, just a client disconnecting mid-request
+  if (err.type === 'request.aborted' || (err.name === 'BadRequestError' && err.message === 'request aborted')) {
+    return; // Silently ignore — not a real crash
+  }
   console.error(`[FATAL] Uncaught exception: ${err.message}`);
   console.error(err.stack);
   // Exit on truly fatal errors, but give time to flush logs
@@ -626,10 +631,13 @@ app.use('/api', (req, res, next) => {
 //   ROTATOR_STALE_MS=5000
 // ============================================
 
-const ROTATOR_PROVIDER = (process.env.ROTATOR_PROVIDER || 'pstrotator_udp').toLowerCase();
+// Default to 'none' so hosted/cloud instances don't try to reach a LAN rotator.
+// Self-hosted users must explicitly set ROTATOR_PROVIDER=pstrotator_udp.
+const ROTATOR_PROVIDER = (process.env.ROTATOR_PROVIDER || 'none').toLowerCase();
 const PSTROTATOR_HOST = process.env.PSTROTATOR_HOST || '192.168.1.43';
 const PSTROTATOR_UDP_PORT = parseInt(process.env.PSTROTATOR_UDP_PORT || '12000', 10);
 const ROTATOR_STALE_MS = parseInt(process.env.ROTATOR_STALE_MS || '5000', 10);
+const ROTATOR_POLL_MS = parseInt(process.env.ROTATOR_POLL_MS || '1000', 10);
 
 // PstRotatorAz replies to UDP port+1 at the sender's IP (per manual)
 const PSTROTATOR_REPLY_PORT = PSTROTATOR_UDP_PORT + 1;
@@ -644,25 +652,20 @@ const rotatorState = {
 function clampAz(v) {
   let n = Number(v);
   if (!Number.isFinite(n)) return null;
-  // normalize to [0, 360)
   n = ((n % 360) + 360) % 360;
   return Math.round(n);
 }
 
 function parseAzimuthFromMessage(msgStr) {
-  // Expected examples:
-  //   "AZ:123"
-  //   "... AZ:123 ..."
   const m = msgStr.match(/AZ\s*:\s*([0-9]{1,3})/i);
   if (!m) return null;
-  const az = clampAz(parseInt(m[1], 10));
-  return az;
+  return clampAz(parseInt(m[1], 10));
 }
 
-// A simple in-process "mutex" so we don't overlap UDP queries
-let rotatorInflight = Promise.resolve();
-
 let rotatorSocket = null;
+
+// Single-slot mutex: only one UDP query at a time, no chaining
+let rotatorBusy = false;
 
 function ensureRotatorSocket() {
   if (rotatorSocket) return rotatorSocket;
@@ -671,19 +674,12 @@ function ensureRotatorSocket() {
 
   sock.on('error', (err) => {
     rotatorState.lastError = String(err?.message || err);
-    // Don't crash server; just log once in a while
     console.warn(`[Rotator] UDP socket error: ${rotatorState.lastError}`);
   });
 
   sock.on('message', (buf, rinfo) => {
     const s = buf.toString('utf8').trim();
-
-    console.log(
-      `[Rotator] RX from ${rinfo.address}:${rinfo.port} -> "${s}"`
-    );
-
     const az = parseAzimuthFromMessage(s);
-
     if (az !== null) {
       rotatorState.azimuth = az;
       rotatorState.lastSeen = Date.now();
@@ -691,12 +687,8 @@ function ensureRotatorSocket() {
     }
   });
 
-  // Bind to reply port so PstRotatorAz can send responses back
-  // NOTE: allow on all interfaces
   sock.bind(PSTROTATOR_REPLY_PORT, '0.0.0.0', () => {
-    try {
-      sock.setRecvBufferSize?.(1024 * 1024);
-    } catch {}
+    try { sock.setRecvBufferSize?.(1024 * 1024); } catch {}
     console.log(`[Rotator] UDP listening on ${PSTROTATOR_REPLY_PORT} (provider=${ROTATOR_PROVIDER})`);
   });
 
@@ -705,9 +697,8 @@ function ensureRotatorSocket() {
 }
 
 function udpSend(message) {
-  const sock = ensureRotatorSocket();     // this one is bound to 12001
+  const sock = ensureRotatorSocket();
   const buf = Buffer.from(message, 'utf8');
-
   return new Promise((resolve, reject) => {
     sock.send(buf, 0, buf.length, PSTROTATOR_UDP_PORT, PSTROTATOR_HOST, (err) => {
       if (err) return reject(err);
@@ -716,78 +707,69 @@ function udpSend(message) {
   });
 }
 
+/**
+ * Query azimuth once via UDP.  Single-slot mutex prevents pile-up.
+ * Returns immediately if another query is already in flight.
+ */
 async function queryAzimuthOnce(timeoutMs = 800) {
-  if (ROTATOR_PROVIDER === 'none') {
-    return { ok: false, reason: 'disabled' };
-  }
+  if (ROTATOR_PROVIDER === 'none') return { ok: false, reason: 'disabled' };
+  if (rotatorBusy) return { ok: false, reason: 'busy' };
 
-  // Serialize UDP queries
-  rotatorInflight = rotatorInflight.then(async () => {
-    const before = Date.now();
-    try {
-      // Per manual: request azimuth
-      // <PST>AZ?</PST>
-      console.log(`[Rotator] TX query -> ${PSTROTATOR_HOST}:${PSTROTATOR_UDP_PORT}`);
-      await udpSend('<PST>AZ?</PST>');
-
-      // Wait until we see a fresh AZ update (or timeout)
-      while (Date.now() - before < timeoutMs) {
-        if (rotatorState.lastSeen >= before && rotatorState.azimuth !== null) {
-          return { ok: true, azimuth: rotatorState.azimuth };
-        }
-        await new Promise(r => setTimeout(r, 30));
+  rotatorBusy = true;
+  const before = Date.now();
+  try {
+    await udpSend('<PST>AZ?</PST>');
+    // Wait for a fresh reply (or timeout)
+    while (Date.now() - before < timeoutMs) {
+      if (rotatorState.lastSeen >= before && rotatorState.azimuth !== null) {
+        return { ok: true, azimuth: rotatorState.azimuth };
       }
-      return { ok: false, reason: 'timeout' };
-    } catch (e) {
-      rotatorState.lastError = String(e?.message || e);
-      return { ok: false, reason: rotatorState.lastError };
+      await new Promise(r => setTimeout(r, 30));
     }
-  });
-
-  return rotatorInflight;
+    return { ok: false, reason: 'timeout' };
+  } catch (e) {
+    rotatorState.lastError = String(e?.message || e);
+    return { ok: false, reason: rotatorState.lastError };
+  } finally {
+    rotatorBusy = false;
+  }
 }
 
 async function setAzimuth(az) {
   if (ROTATOR_PROVIDER === 'none') return { ok: false, reason: 'disabled' };
-
   const clamped = clampAz(az);
   if (clamped === null) return { ok: false, reason: 'invalid azimuth' };
-
-  // Per manual: set azimuth
-  // <PST><AZIMUTH>85</AZIMUTH></PST>
   await udpSend(`<PST><AZIMUTH>${clamped}</AZIMUTH></PST>`);
   return { ok: true, target: clamped };
 }
 
 async function stopRotator() {
   if (ROTATOR_PROVIDER === 'none') return { ok: false, reason: 'disabled' };
-
-  // Per manual: STOP command
   await udpSend('<PST><STOP>1</STOP></PST>');
   return { ok: true };
 }
 
-// --- REST API ---
+// --- Background poll (only if provider is configured) ---
+// Instead of querying on every HTTP request, poll once per interval server-side.
+if (ROTATOR_PROVIDER !== 'none') {
+  console.log(`[Rotator] Starting background poll every ${ROTATOR_POLL_MS}ms to ${PSTROTATOR_HOST}:${PSTROTATOR_UDP_PORT}`);
+  setInterval(() => {
+    queryAzimuthOnce(800).catch(() => {});
+  }, Math.max(500, ROTATOR_POLL_MS));
+}
 
-app.get('/api/rotator/status', async (req, res) => {
-  // Always fresh
-  console.log('[Rotator] /api/rotator/status hit');
+// --- REST API ---
+// These are now synchronous reads of cached state — zero async work per request.
+
+app.get('/api/rotator/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-  // If we haven't seen an update recently, try to poll once
   const now = Date.now();
   const isLive = rotatorState.azimuth !== null && (now - rotatorState.lastSeen) <= ROTATOR_STALE_MS;
 
-  if (!isLive && ROTATOR_PROVIDER !== 'none') {
-    await queryAzimuthOnce(800);
-  }
-
-  const now2 = Date.now();
-  const live2 = rotatorState.azimuth !== null && (now2 - rotatorState.lastSeen) <= ROTATOR_STALE_MS;
-
   res.json({
     source: ROTATOR_PROVIDER,
-    live: live2,
+    live: isLive,
     azimuth: rotatorState.azimuth,
     lastSeen: rotatorState.lastSeen || 0,
     staleMs: ROTATOR_STALE_MS,
@@ -801,7 +783,7 @@ app.post('/api/rotator/turn', async (req, res) => {
     const { azimuth } = req.body || {};
     const result = await setAzimuth(azimuth);
 
-    // Optionally query immediately so UI updates quickly
+    // One follow-up query so the UI gets an updated reading quickly
     await queryAzimuthOnce(800);
 
     res.json({
@@ -1388,7 +1370,7 @@ setInterval(() => {
     spotBufferEntries: pskMqtt.spotBuffer.size,
     spotBufferTotal: [...pskMqtt.spotBuffer.values()].reduce((n, b) => n + b.length, 0),
   };
-  console.log(`[Memory] RSS=${mb(mem.rss)}MB Heap=${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB External=${mb(mem.external)}MB | MQTT: ${mqttStats.sseClients} SSE clients, ${mqttStats.subscribedCalls} calls, ${mqttStats.recentSpotsTotal} recent spots (${mqttStats.recentSpotsEntries} entries), ${mqttStats.spotBufferTotal} buffered | GeoIP=${geoIPCache.size} MySpots=${mySpotsCache.size} AllTimeIPs=${allTimeIPSet.size}`);
+  console.log(`[Memory] RSS=${mb(mem.rss)}MB Heap=${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB External=${mb(mem.external)}MB | MQTT: ${mqttStats.sseClients} SSE clients, ${mqttStats.subscribedCalls} calls, ${mqttStats.recentSpotsTotal} recent spots (${mqttStats.recentSpotsEntries} entries), ${mqttStats.spotBufferTotal} buffered | GeoIP=${geoIPCache.size} CallLookup=${callsignLookupCache?.size || 0} MySpots=${mySpotsCache.size} AllTimeIPs=${allTimeIPSet.size}`);
 }, 15 * 60 * 1000);
 
 // ============================================
@@ -2156,6 +2138,7 @@ app.get('/api/pota/spots', async (req, res) => {
   try {
     // Return cached data if fresh
     if (potaCache.data && (Date.now() - potaCache.timestamp) < POTA_CACHE_TTL) {
+      res.set('Cache-Control', 'public, max-age=60, s-maxage=60');
       return res.json(potaCache.data);
     }
     
@@ -2184,6 +2167,38 @@ app.get('/api/pota/spots', async (req, res) => {
     // Return stale cache on error
     if (potaCache.data) return res.json(potaCache.data);
     res.status(500).json({ error: 'Failed to fetch POTA spots' });
+  }
+});
+// WWFF Spots
+// WWFF cache (1 minute)
+let wwffCache = { data: null, timestamp: 0 };
+const WWFF_CACHE_TTL = 90 * 1000; // 90 seconds (longer than 60s frontend poll to maximize cache hits)
+
+app.get('/api/wwff/spots', async (req, res) => {
+  try {
+    // Return cached data if fresh
+    if (potaCache.data && (Date.now() - potaCache.timestamp) < WWFF_CACHE_TTL) {
+      return res.json(wwffCache.data);
+    }
+    
+    const response = await fetch('https://spots.wwff.co/static/spots.json');
+    const data = await response.json();
+    
+    // Log diagnostic info about the response
+    if (Array.isArray(data) && data.length > 0) {
+      const sample = data[0];
+      logDebug('[WWFF] API returned', data.length, 'spots. Sample fields:', Object.keys(sample).join(', '));
+    }
+    
+    // Cache the response
+    wwffCache = { data, timestamp: Date.now() };
+    
+    res.json(data);
+  } catch (error) {
+    logErrorOnce('WWFF', error.message);
+    // Return stale cache on error
+    if (wwffCache.data) return res.json(wwffCache.data);
+    res.status(500).json({ error: 'Failed to fetch WWFF spots' });
   }
 });
 
@@ -2240,6 +2255,7 @@ app.get('/api/sota/spots', async (req, res) => {
   try {
     // Return cached data if fresh
     if (sotaCache.data && (Date.now() - sotaCache.timestamp) < SOTA_CACHE_TTL) {
+      res.set('Cache-Control', 'public, max-age=90, s-maxage=90');
       return res.json(sotaCache.data);
     }
 
@@ -2924,7 +2940,7 @@ app.get('/api/dxcluster/paths', async (req, res) => {
           const lonMatch = text.match(/<lng>([^<]+)<\/lng>/);
           const countryMatch = text.match(/<n>([^<]+)<\/name>/);
           if (latMatch && lonMatch) {
-            callsignLookupCache.set(call, {
+            cacheCallsignLookup(call, {
               data: {
                 callsign: call,
                 lat: parseFloat(latMatch[1]),
@@ -3087,6 +3103,39 @@ app.get('/api/dxcluster/paths', async (req, res) => {
 // Cache for callsign lookups - callsigns don't change location often
 const callsignLookupCache = new Map(); // key = callsign, value = { data, timestamp }
 const CALLSIGN_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const CALLSIGN_CACHE_MAX = 10000; // Hard cap — evict oldest when exceeded
+
+// Periodic cleanup: purge expired entries every 30 minutes
+setInterval(() => {
+  const now = Date.now();
+  let purged = 0;
+  for (const [call, entry] of callsignLookupCache) {
+    if (now - entry.timestamp > CALLSIGN_CACHE_TTL) {
+      callsignLookupCache.delete(call);
+      purged++;
+    }
+  }
+  // If still over cap after TTL purge, evict oldest entries
+  if (callsignLookupCache.size > CALLSIGN_CACHE_MAX) {
+    const sorted = [...callsignLookupCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const toRemove = sorted.slice(0, callsignLookupCache.size - CALLSIGN_CACHE_MAX);
+    for (const [call] of toRemove) {
+      callsignLookupCache.delete(call);
+      purged++;
+    }
+  }
+  if (purged > 0) logDebug(`[Cache] Callsign lookup: purged ${purged} expired/excess entries, ${callsignLookupCache.size} remaining`);
+}, 30 * 60 * 1000);
+
+// Helper: add to cache with size enforcement — prevents unbounded growth between cleanups
+function cacheCallsignLookup(call, data) {
+  if (callsignLookupCache.size >= CALLSIGN_CACHE_MAX && !callsignLookupCache.has(call)) {
+    // Evict oldest entry to make room
+    const oldest = callsignLookupCache.keys().next().value;
+    if (oldest) callsignLookupCache.delete(oldest);
+  }
+  callsignLookupCache.set(call, data);
+}
 
 // ── Extract base callsign from decorated/portable calls ──
 // Strips prefixes (5Z4/OZ6ABL → OZ6ABL) and suffixes (UA1TAN/M → UA1TAN)
@@ -3149,7 +3198,9 @@ const qrzSession = {
   password: CONFIG._qrzPassword || '',
   loginInFlight: null,  // Dedup concurrent login attempts
   lookupCount: 0,
-  lastError: null
+  lastError: null,
+  authFailedUntil: 0,  // Cooldown after credential failures — don't retry until this timestamp
+  authFailCooldown: 60 * 60 * 1000  // 1 hour cooldown after bad credentials
 };
 
 // Persist QRZ credentials to a file so they survive restarts (set via Settings UI)
@@ -3187,6 +3238,11 @@ function isQRZConfigured() {
 async function qrzLogin() {
   if (!isQRZConfigured()) return null;
   
+  // Don't retry if credentials failed recently — avoids hammering QRZ with bad creds
+  if (Date.now() < qrzSession.authFailedUntil) {
+    return null;
+  }
+  
   // Dedup: if a login is already in-flight, piggyback on it
   if (qrzSession.loginInFlight) return qrzSession.loginInFlight;
   
@@ -3209,7 +3265,13 @@ async function qrzLogin() {
       
       if (errorMatch) {
         qrzSession.lastError = errorMatch[1];
-        console.error(`[QRZ] Login failed: ${errorMatch[1]}`);
+        // Credential failures get a long cooldown — no point retrying until creds change
+        if (errorMatch[1].includes('incorrect') || errorMatch[1].includes('Invalid') || errorMatch[1].includes('denied')) {
+          qrzSession.authFailedUntil = Date.now() + qrzSession.authFailCooldown;
+          console.error(`[QRZ] Login failed: ${errorMatch[1]} — suppressing retries for 1 hour`);
+        } else {
+          console.error(`[QRZ] Login failed: ${errorMatch[1]}`);
+        }
         return null;
       }
       
@@ -3217,6 +3279,7 @@ async function qrzLogin() {
         qrzSession.key = keyMatch[1];
         qrzSession.expiry = Date.now() + qrzSession.maxAge;
         qrzSession.lastError = null;
+        qrzSession.authFailedUntil = 0; // Clear cooldown on success
         const subInfo = subExpMatch ? subExpMatch[1] : 'unknown';
         console.log(`[QRZ] Session established (subscription: ${subInfo})`);
         return qrzSession.key;
@@ -3366,6 +3429,7 @@ app.get('/api/qrz/status', (req, res) => {
     hasSession: !!qrzSession.key,
     lookupCount: qrzSession.lookupCount,
     lastError: qrzSession.lastError,
+    authCooldownRemaining: qrzSession.authFailedUntil > Date.now() ? Math.round((qrzSession.authFailedUntil - Date.now()) / 60000) : 0,
     source: CONFIG._qrzUsername ? 'env' : (qrzSession.username ? 'settings' : 'none')
   });
 });
@@ -3385,6 +3449,7 @@ app.post('/api/qrz/configure', writeLimiter, async (req, res) => {
   qrzSession.password = password.trim();
   qrzSession.key = null;
   qrzSession.expiry = 0;
+  qrzSession.authFailedUntil = 0; // Clear cooldown — user is providing new credentials
   
   const key = await qrzLogin();
   
@@ -3424,6 +3489,7 @@ app.post('/api/qrz/remove', writeLimiter, (req, res) => {
   qrzSession.expiry = 0;
   qrzSession.lookupCount = 0;
   qrzSession.lastError = null;
+  qrzSession.authFailedUntil = 0;
   
   try {
     if (fs.existsSync(QRZ_CREDS_FILE)) {
@@ -3489,7 +3555,7 @@ app.get('/api/callsign/:call', async (req, res) => {
     
     if (result) {
       logDebug(`[Callsign Lookup] ${callsign}: ${result.source} -> ${result.lat?.toFixed(2)}, ${result.lon?.toFixed(2)}`);
-      callsignLookupCache.set(callsign, { data: result, timestamp: now });
+      cacheCallsignLookup(callsign, { data: result, timestamp: now });
       return res.json(result);
     }
     
@@ -3501,7 +3567,7 @@ app.get('/api/callsign/:call', async (req, res) => {
     // Still try prefix estimate on error
     const estimated = estimateLocationFromPrefix(callsign);
     if (estimated) {
-      callsignLookupCache.set(callsign, { data: { ...estimated, source: 'prefix' }, timestamp: now });
+      cacheCallsignLookup(callsign, { data: { ...estimated, source: 'prefix' }, timestamp: now });
       return res.json({ ...estimated, source: 'prefix' });
     }
     res.status(500).json({ error: 'Lookup failed' });
@@ -4213,6 +4279,20 @@ function estimateLocationFromPrefix(callsign) {
     }
   }
   
+  // Fallback: try cty.dat database (has lat/lon for every DXCC entity)
+  const ctyResult = lookupCall(callsign);
+  if (ctyResult && ctyResult.lat != null && ctyResult.lon != null) {
+    return {
+      callsign,
+      lat: ctyResult.lat,
+      lon: ctyResult.lon,
+      grid: null,
+      country: ctyResult.entity || 'Unknown',
+      estimated: true,
+      source: 'prefix'
+    };
+  }
+
   // Fallback to first character (most likely country for each letter)
   const firstCharGrids = {
     'A': 'EM79', 'B': 'PL02', 'C': 'FN03', 'D': 'JO51', 'E': 'IO63', // A=USA (AA-AL), B=China, C=Canada, D=Germany, E=Spain/Ireland
@@ -6584,15 +6664,15 @@ function calculateEnhancedReliability(freq, distance, midLat, midLon, hour, sfi,
   const muf = calculateMUF(distance, midLat, midLon, hour, sfi, ssn, hourIonoData);
   const luf = calculateLUF(distance, midLat, hour, sfi, kIndex);
   
-  // Apply signal margin from mode + power
-  // Positive margin (e.g. FT8 or high power) effectively widens the usable window:
-  //   - Extends effective MUF (weak-signal modes can decode signals near/above MUF)
+  // Apply signal margin from mode + power to MUF/LUF boundaries.
+  // Positive margin (e.g. FT8 or high power) widens the usable window:
+  //   - Extends effective MUF (more power/sensitivity can use marginal propagation)
   //   - Reduces effective LUF (more power overcomes D-layer absorption)
-  // Each dB of margin extends MUF by ~1.2% and reduces LUF by ~0.8%
-  const effectiveMuf = muf * (1 + signalMarginDb * 0.012);
-  const effectiveLuf = luf * Math.max(0.1, 1 - signalMarginDb * 0.008);
+  // Scale: ~2% per dB for MUF, ~1.5% per dB for LUF
+  const effectiveMuf = muf * (1 + signalMarginDb * 0.020);
+  const effectiveLuf = luf * Math.max(0.1, 1 - signalMarginDb * 0.015);
   
-  // Calculate reliability based on frequency position relative to effective MUF/LUF
+  // Calculate BASE reliability from frequency position relative to effective MUF/LUF
   let reliability = 0;
   
   if (freq > effectiveMuf * 1.1) {
@@ -6627,6 +6707,32 @@ function calculateEnhancedReliability(freq, distance, midLat, midLon, hour, sfi,
         // Above OWF - reliability decreases as we approach MUF
         reliability = 95 - ((position - optimalPosition) / (1 - optimalPosition)) * 45;
       }
+    }
+  }
+  
+  // ── Power/mode signal margin: direct effect on reliability ──
+  // In real propagation, more power = higher received SNR = better probability
+  // of maintaining a link. A marginal path (30% reliability) at 100W SSB becomes
+  // much more reliable at 1000W, and much worse at 5W.
+  //
+  // signalMarginDb: 0 at SSB/100W, +10 at SSB/1000W, -13 at SSB/5W, +34 at FT8/100W
+  //
+  // Apply as a sigmoid-shaped boost/penalty centered on the baseline reliability.
+  // Positive margin pushes reliability toward 99, negative pushes toward 0.
+  if (signalMarginDb !== 0 && reliability > 0 && reliability < 99) {
+    // Convert dB margin to a reliability shift.
+    // Each 10 dB roughly doubles (or halves) the chance of a usable link.
+    // Use logistic scaling so we don't exceed 0-99 bounds.
+    const marginFactor = signalMarginDb / 15; // normalized: ±1 at ±15dB
+    
+    if (marginFactor > 0) {
+      // Boost: push toward 99. Marginal paths benefit most.
+      const headroom = 99 - reliability;
+      reliability += headroom * (1 - Math.exp(-marginFactor * 1.2));
+    } else {
+      // Penalty: push toward 0. Good paths degrade.
+      const room = reliability;
+      reliability -= room * (1 - Math.exp(marginFactor * 1.2));
     }
   }
   
@@ -8566,7 +8672,7 @@ function handleWSJTXMessage(msg, state) {
               const lonMatch = text.match(/<lng>([^<]+)<\/lng>/);
               const countryMatch = text.match(/<n>([^<]+)<\/name>/);
               if (latMatch && lonMatch) {
-                callsignLookupCache.set(targetCall, {
+                cacheCallsignLookup(targetCall, {
                   data: {
                     callsign: targetCall,
                     lat: parseFloat(latMatch[1]),
@@ -9123,6 +9229,238 @@ app.get('/api/wsjtx/relay/download/:platform', (req, res) => {
 // CONTEST LOGGER UDP + API (N1MM / DXLog)
 // ============================================
 
+// ── CTY.DAT — DXCC Entity Database ────────────────────────
+// Serves the parsed cty.dat prefix → entity lookup for client-side callsign identification.
+// Data from country-files.com (AD1C), refreshed every 24h.
+
+app.get('/api/cty', (req, res) => {
+  const data = getCtyData();
+  if (!data) {
+    return res.status(503).json({ error: 'CTY data not yet loaded' });
+  }
+  // Long cache — data only changes every few weeks upstream
+  res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600');
+  res.json(data);
+});
+
+// Lightweight single-call lookup (avoids sending full 200KB+ database to client)
+app.get('/api/cty/lookup/:call', (req, res) => {
+  const result = lookupCall(req.params.call);
+  if (!result) {
+    return res.status(404).json({ error: 'Unknown callsign prefix' });
+  }
+  res.set('Cache-Control', 'public, max-age=3600, s-maxage=3600');
+  res.json(result);
+});
+
+// ── RIG LISTENER DOWNLOAD ─────────────────────────────────
+// Serves the rig-listener.js agent and generates one-click launcher scripts
+// that auto-download portable Node.js + serialport. User double-clicks → wizard runs.
+
+app.get('/api/rig/listener.js', (req, res) => {
+  const listenerPath = path.join(__dirname, 'rig-listener', 'rig-listener.js');
+  try {
+    const js = fs.readFileSync(listenerPath, 'utf8');
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send(js);
+  } catch (e) {
+    res.status(500).json({ error: 'rig-listener.js not found on server' });
+  }
+});
+
+app.get('/api/rig/package.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.json({ name: 'ohc-rig', version: '1.0.0', dependencies: { serialport: '^12.0.0' } });
+});
+
+app.get('/api/rig/download/:platform', (req, res) => {
+  const platform = req.params.platform;
+  if (!['linux', 'mac', 'windows'].includes(platform)) {
+    return res.status(400).json({ error: 'Invalid platform. Use: linux, mac, or windows' });
+  }
+
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const serverURL = (proto + '://' + host).replace(/[^a-zA-Z0-9._\-:\/\@]/g, '');
+
+  if (platform === 'windows') {
+    const NODE_VERSION = 'v22.13.1';
+    const NODE_ZIP = 'node-' + NODE_VERSION + '-win-x64.zip';
+    const NODE_DIR = 'node-' + NODE_VERSION + '-win-x64';
+    const NODE_URL = 'https://nodejs.org/dist/' + NODE_VERSION + '/' + NODE_ZIP;
+
+    const bat = [
+      '@echo off',
+      'setlocal',
+      'title OpenHamClock Rig Listener',
+      'echo.',
+      'echo  =========================================',
+      'echo   OpenHamClock Rig Listener v1.0',
+      'echo  =========================================',
+      'echo.',
+      '',
+      ':: Persistent install folder next to this .bat',
+      'set "RIG_DIR=%~dp0openhamclock-rig"',
+      'if not exist "%RIG_DIR%" mkdir "%RIG_DIR%"',
+      '',
+      ':: ---- Node.js ----',
+      'set "NODE_EXE=node"',
+      'set "NPM_EXE=npm"',
+      'set "PORTABLE_DIR=%RIG_DIR%\\.node"',
+      '',
+      'where node >nul 2>nul',
+      'if not errorlevel 1 (',
+      '    for /f "tokens=*" %%i in (\'node -v\') do echo   Found Node.js %%i',
+      '    goto :have_node',
+      ')',
+      '',
+      'if exist "%PORTABLE_DIR%\\' + NODE_DIR + '\\node.exe" (',
+      '    set "NODE_EXE=%PORTABLE_DIR%\\' + NODE_DIR + '\\node.exe"',
+      '    set "NPM_EXE=%PORTABLE_DIR%\\' + NODE_DIR + '\\npm.cmd"',
+      '    echo   Found portable Node.js',
+      '    goto :have_node',
+      ')',
+      '',
+      'echo   Node.js not found. Downloading portable version...',
+      'echo   (One-time ~30MB download)',
+      'echo.',
+      'if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"',
+      '',
+      'powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri \'' + NODE_URL + '\' -OutFile \'%PORTABLE_DIR%\\' + NODE_ZIP + '\' } catch { Write-Host $_.Exception.Message; exit 1 }"',
+      'if errorlevel 1 (',
+      '    echo   Failed to download Node.js! Check your internet connection.',
+      '    pause',
+      '    exit /b 1',
+      ')',
+      '',
+      'echo   Extracting...',
+      'powershell -Command "Expand-Archive -Path \'%PORTABLE_DIR%\\' + NODE_ZIP + '\' -DestinationPath \'%PORTABLE_DIR%\' -Force"',
+      'del "%PORTABLE_DIR%\\' + NODE_ZIP + '" >nul 2>nul',
+      'set "NODE_EXE=%PORTABLE_DIR%\\' + NODE_DIR + '\\node.exe"',
+      'set "NPM_EXE=%PORTABLE_DIR%\\' + NODE_DIR + '\\npm.cmd"',
+      'echo   Node.js ready.',
+      'echo.',
+      '',
+      ':have_node',
+      '',
+      ':: Add portable node dir to PATH so npm child scripts can find "node"',
+      'for %%F in ("%NODE_EXE%") do set "NODE_DIR=%%~dpF"',
+      'set "PATH=%NODE_DIR%;%PATH%"',
+      '',
+      ':: ---- Download rig-listener.js ----',
+      'echo   Downloading rig listener...',
+      'powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri \'' + serverURL + '/api/rig/listener.js\' -OutFile \'%RIG_DIR%\\rig-listener.js\' } catch { Write-Host $_.Exception.Message; exit 1 }"',
+      'if errorlevel 1 (',
+      '    echo   Failed to download rig listener!',
+      '    pause',
+      '    exit /b 1',
+      ')',
+      '',
+      ':: ---- package.json (always refresh) ----',
+      'powershell -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri \'' + serverURL + '/api/rig/package.json\' -OutFile \'%RIG_DIR%\\package.json\' } catch { Write-Host $_.Exception.Message; exit 1 }"',
+      '',
+      ':: ---- npm install (one-time) ----',
+      'if not exist "%RIG_DIR%\\node_modules\\serialport" (',
+      '    echo.',
+      '    echo   Installing serial port driver... (one-time, ~30 seconds)',
+      '    echo.',
+      '    pushd "%RIG_DIR%"',
+      '    call "%NPM_EXE%" install --loglevel=error 2>&1',
+      '    popd',
+      '    if not exist "%RIG_DIR%\\node_modules\\serialport" (',
+      '        echo.',
+      '        echo   Failed to install serialport!',
+      '        echo.',
+      '        pause',
+      '        exit /b 1',
+      '    )',
+      '    echo   Serial port driver installed.',
+      ')',
+      '',
+      'echo.',
+      'echo   Starting rig listener...',
+      'echo   (Close this window to stop)',
+      'echo.',
+      '',
+      '"%NODE_EXE%" "%RIG_DIR%\\rig-listener.js"',
+      '',
+      'echo.',
+      'echo   Rig listener stopped.',
+      'echo.',
+      'pause',
+    ].join('\r\n') + '\r\n';
+
+    res.setHeader('Content-Type', 'application/x-msdos-program');
+    res.setHeader('Content-Disposition', 'attachment; filename="OpenHamClock-Rig-Listener.bat"');
+    return res.send(bat);
+
+  } else {
+    // Linux / Mac
+    const filename = platform === 'mac' ? 'OpenHamClock-Rig-Listener.command' : 'OpenHamClock-Rig-Listener.sh';
+    const rigDir = '$HOME/openhamclock-rig';
+
+    const sh = [
+      '#!/bin/bash',
+      '# OpenHamClock Rig Listener — Download and Run',
+      '# Double-click (Mac) or: bash ' + filename,
+      '',
+      'set -e',
+      '',
+      'echo ""',
+      'echo "  ========================================="',
+      'echo "   OpenHamClock Rig Listener v1.0"',
+      'echo "  ========================================="',
+      'echo ""',
+      '',
+      '# Check for Node.js',
+      'if ! command -v node &> /dev/null; then',
+      '    echo "  Node.js is not installed."',
+      '    echo ""',
+      '    echo "  Install it:"',
+      platform === 'mac'
+        ? '    echo "    brew install node    (if you have Homebrew)"'
+        : '    echo "    sudo apt install nodejs npm    (Debian/Ubuntu)"',
+      '    echo "    Or download from https://nodejs.org"',
+      '    echo ""',
+      '    exit 1',
+      'fi',
+      '',
+      'echo "  Found Node.js $(node -v)"',
+      '',
+      '# Create persistent folder',
+      'RIG_DIR="' + rigDir + '"',
+      'mkdir -p "$RIG_DIR"',
+      '',
+      '# Download latest rig-listener.js',
+      'echo "  Downloading rig listener..."',
+      'curl -sL "' + serverURL + '/api/rig/listener.js" -o "$RIG_DIR/rig-listener.js"',
+      '',
+      '# package.json (always refresh)',
+      'curl -sL "' + serverURL + '/api/rig/package.json" -o "$RIG_DIR/package.json"',
+      '',
+      '# npm install (one-time)',
+      'if [ ! -d "$RIG_DIR/node_modules/serialport" ]; then',
+      '  echo ""',
+      '  echo "  Installing serial port driver... (one-time, ~30 seconds)"',
+      '  cd "$RIG_DIR" && npm install --loglevel=error',
+      '  echo "  Done."',
+      'fi',
+      '',
+      'echo ""',
+      'echo "  Starting rig listener..."',
+      'echo "  Press Ctrl+C to stop."',
+      'echo ""',
+      '',
+      'cd "$RIG_DIR"',
+      'exec node rig-listener.js',
+    ].join('\n') + '\n';
+
+    res.setHeader('Content-Type', 'application/x-sh');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+    return res.send(sh);
+  }
+});
+
 const N1MM_UDP_PORT = parseInt(process.env.N1MM_UDP_PORT || '12060');
 const N1MM_ENABLED = process.env.N1MM_UDP_ENABLED === 'true';
 const N1MM_MAX_QSOS = parseInt(process.env.N1MM_MAX_QSOS || '200');
@@ -9495,6 +9833,14 @@ if (N1MM_ENABLED) {
   console.log('');
 
   startAutoUpdateScheduler();
+  
+  // Load DXCC entity database (cty.dat) — async, non-blocking
+  initCtyData().then(() => {
+    const data = getCtyData();
+    if (data) {
+      console.log(`  📡 CTY database: ${data.entities.length} entities, ${Object.keys(data.prefixes).length} prefixes`);
+    }
+  }).catch(() => {});
   
   // Check for outdated systemd service file that prevents auto-update restart
   if (AUTO_UPDATE_ENABLED && (process.env.INVOCATION_ID || process.ppid === 1)) {

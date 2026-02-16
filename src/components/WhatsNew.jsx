@@ -10,7 +10,71 @@ import { useState, useEffect } from 'react';
 // Each entry: { version, date, heading, features: [...] }
 const CHANGELOG = [
   {
-    version: '15.4.0',
+    version: '15.5.1',
+    date: '2026-02-15',
+    heading: 'Better callsign lookups, better propagation maps.',
+    features: [
+      {
+        icon: '🌍',
+        title: 'cty.dat DXCC Entity Database',
+        desc: 'Callsign → entity identification now uses the full AD1C cty.dat database — the same file every contest logger uses. ~400 DXCC entities, thousands of prefixes, zone overrides, and exact callsign matches. Replaces the old hand-coded 120-entry prefix table.'
+      },
+      {
+        icon: '📡',
+        title: 'MUF Layer Restored',
+        desc: 'Fixed a regression where the MUF Map layer disappeared from the Map Layers list. The ionosonde-based MUF overlay is back.'
+      },
+      {
+        icon: '🔥',
+        title: 'VOACAP Power Levels Fixed',
+        desc: 'Changing TX power (e.g. 5W vs 1000W) now produces dramatically different propagation maps, matching real-world behavior. Previously, power barely affected the heatmap colors.'
+      },
+      {
+        icon: '🔎',
+        title: 'Smarter DX Cluster Filtering',
+        desc: 'Spotter and spot continent/zone filtering is now far more accurate thanks to the cty.dat database. Calls like 3B9WR (Rodriguez Island) and 5B4 (Cyprus) are correctly identified instead of falling through to crude single-character guesses.'
+      },
+    ]
+  },
+  {
+    version: '15.5.0',
+    date: '2026-02-15',
+    heading: 'Click a spot. Tune your radio. Just like that.',
+    features: [
+      {
+        icon: '📻',
+        title: 'Direct Rig Control',
+        desc: 'Click any DX cluster spot, POTA activation, or WSJT-X decode and your radio tunes instantly. Supports Yaesu, Kenwood, Elecraft, and Icom radios — no flrig or rigctld needed.'
+      },
+      {
+        icon: '⬇️',
+        title: 'One-Click Rig Listener Download',
+        desc: 'Enable Rig Control in Settings and download the Rig Listener for Windows, Mac, or Linux. Double-click to run — it auto-installs everything. No Node.js, no command line, no setup headaches.'
+      },
+      {
+        icon: '🔌',
+        title: 'Interactive Setup Wizard',
+        desc: 'The Rig Listener detects your USB serial ports, asks your radio brand and model, saves the config, and connects. First run is a 30-second wizard — after that, just double-click to start.'
+      },
+      {
+        icon: '🔄',
+        title: 'Live Frequency & Mode Display',
+        desc: 'Your radio\'s current frequency and mode are shown in real time on the dashboard. Polls every 500ms over USB so the display always matches your dial.'
+      },
+      {
+        icon: '🌙',
+        title: 'Night Darkness Slider',
+        desc: 'Adjust how dark the nighttime shading appears on the map. Slide from subtle to dramatic — find the look that works for your setup. Located below the map lock toggle.'
+      },
+      {
+        icon: '👁️',
+        title: 'Hosted User Cleanup',
+        desc: 'Rotator panel and local-only features are now hidden for hosted users — cleaner interface, no confusing controls that don\'t apply to your setup.'
+      },
+    ]
+  },
+  {
+    version: '15.4.1',
     date: '2026-02-15',
     heading: "Tonight's a big one — here's what's new:",
     features: [
