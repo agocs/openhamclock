@@ -27,7 +27,7 @@ npm install
 
 ## Configuration
 
-Configuration is loaded from `rig-config.json`. A default file is provided:
+Configuration is loaded from `rig-config.json`. On first run, this file is automatically created from `rig-config.json.example`:
 
 ```json
 {
@@ -45,6 +45,8 @@ Configuration is loaded from `rig-config.json`. A default file is provided:
   }
 }
 ```
+
+**Important:** Your `rig-config.json` customizations are preserved during updates. The file is excluded from git tracking, so your local changes won't be overwritten when pulling new versions.
 
 ### Configuration Options
 

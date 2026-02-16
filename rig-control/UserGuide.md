@@ -67,7 +67,7 @@ The "Rig Control Bridge" (daemon) is a separate small program that sits between 
 
 Tell the bridge which radio software you use.
 
-1.  Find `rig-config.json` in the `rig-control` folder.
+1.  Find `rig-config.json` in the `rig-control` folder. If it doesn't exist, it will be created automatically from `rig-config.json.example` when you first start the daemon.
 2.  Edit it with any text editor.
 
 ### If using FLRIG (Easiest)
