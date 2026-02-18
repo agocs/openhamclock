@@ -445,6 +445,11 @@ app.use('/api', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return next();
   }
+  // Polling data endpoints — server-side cache handles dedup, no browser/CDN caching
+  if (req.path.includes('/pota') || req.path.includes('/sota') || req.path.includes('/wwff')) {
+    res.setHeader('Cache-Control', 'no-store');
+    return next();
+  }
   // Determine cache duration based on endpoint
   let cacheDuration = 30; // Default: 30 seconds
   
@@ -460,8 +465,6 @@ app.use('/api', (req, res, next) => {
     cacheDuration = 600; // 10 minutes
   } else if (path.includes('/n0nbh') || path.includes('/hamqsl')) {
     cacheDuration = 3600; // 1 hour (N0NBH updates every 3 hours)
-  } else if (path.includes('/pota') || path.includes('/sota')) {
-    cacheDuration = 120; // 2 minutes
   } else if (path.includes('/pskreporter')) {
     cacheDuration = 300; // 5 minutes (PSKReporter rate limits aggressively)
   } else if (path.includes('/dxcluster') || path.includes('/myspots')) {
@@ -2178,7 +2181,7 @@ app.get('/api/pota/spots', async (req, res) => {
   try {
     // Return cached data if fresh
     if (potaCache.data && (Date.now() - potaCache.timestamp) < POTA_CACHE_TTL) {
-      res.set('Cache-Control', 'public, max-age=60, s-maxage=60');
+      res.set('Cache-Control', 'no-store');
       return res.json(potaCache.data);
     }
     
@@ -2218,7 +2221,7 @@ app.get('/api/wwff/spots', async (req, res) => {
   try {
     // Return cached data if fresh
     if (wwffCache.data && (Date.now() - wwffCache.timestamp) < WWFF_CACHE_TTL) {
-      res.set('Cache-Control', 'public, max-age=60, s-maxage=60');
+      res.set('Cache-Control', 'no-store');
       return res.json(wwffCache.data);
     }
     
@@ -2296,7 +2299,7 @@ app.get('/api/sota/spots', async (req, res) => {
   try {
     // Return cached data if fresh
     if (sotaCache.data && (Date.now() - sotaCache.timestamp) < SOTA_CACHE_TTL) {
-      res.set('Cache-Control', 'public, max-age=90, s-maxage=90');
+      res.set('Cache-Control', 'no-store');
       return res.json(sotaCache.data);
     }
 
