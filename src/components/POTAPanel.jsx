@@ -9,15 +9,18 @@ export const POTAPanel = ({
   data,
   loading,
   lastUpdated,
+  lastChecked,
   showOnMap,
   onToggleMap,
   showLabelsOnMap = true,
   onToggleLabelsOnMap,
   onSpotClick,
 }) => {
-  // Staleness indicator — warn if data hasn't refreshed in 5+ minutes
+  // Staleness indicator — warn if data hasn't changed in 5+ minutes
   const staleMinutes = lastUpdated ? Math.floor((Date.now() - lastUpdated) / 60000) : null;
   const isStale = staleMinutes !== null && staleMinutes >= 5;
+  // Show last checked time so user can see polling is alive
+  const checkedTime = lastChecked ? new Date(lastChecked).toISOString().substr(11, 5) + 'z' : '';
 
   return (
     <div className="panel" style={{ padding: '8px', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -30,7 +33,7 @@ export const POTAPanel = ({
       }}>
         <span>
           ▲ POTA ACTIVATORS {data?.length > 0 ? `(${data.length})` : ''}
-          {isStale && <span title={`Last updated ${staleMinutes}m ago`} style={{ color: staleMinutes >= 10 ? '#ff4444' : '#ffaa00', marginLeft: '6px', fontSize: '9px' }}>⚠ {staleMinutes}m ago</span>}
+          {checkedTime && <span style={{ color: isStale ? (staleMinutes >= 10 ? '#ff4444' : '#ffaa00') : '#666', marginLeft: '6px', fontSize: '9px' }}>{isStale ? `⚠ ${staleMinutes}m stale` : `✓${checkedTime}`}</span>}
         </span>
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
           <button

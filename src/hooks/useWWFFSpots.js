@@ -18,7 +18,8 @@ export const useWWFFSpots = () => {
     const fetchWWFF = async () => {
       try {
         // Use server proxy for caching - reduces external API calls
-        const res = await apiFetch('/api/wwff/spots');
+        // Cache-bust to bypass browser cache AND Cloudflare edge cache
+        const res = await apiFetch(`/api/wwff/spots?_t=${Date.now()}`, { cache: 'no-store' });
         if (res?.ok) {
           const spots = await res.json();
           console.log(`[WWFF] Fetched ${Array.isArray(spots) ? spots.length : 0} spots`);

@@ -8,12 +8,12 @@ import { POTAPanel } from './POTAPanel.jsx';
 import { WWFFPanel } from './WWFFPanel.jsx';
 import { SOTAPanel } from './SOTAPanel.jsx';
 
-const TABS = ['pota', 'sota'];
+const TABS = ['pota', 'wwff', 'sota'];
 
 export const PotaSotaPanel = ({
-  potaData, potaLoading, potaLastUpdated, showPOTA, onTogglePOTA,
-  wwffData, wwffLoading, wwffLastUpdated, showWWFF, onToggleWWFF,
-  sotaData, sotaLoading, sotaLastUpdated, showSOTA, onToggleSOTA,
+  potaData, potaLoading, potaLastUpdated, potaLastChecked, showPOTA, onTogglePOTA,
+  wwffData, wwffLoading, wwffLastUpdated, wwffLastChecked, showWWFF, onToggleWWFF,
+  sotaData, sotaLoading, sotaLastUpdated, sotaLastChecked, showSOTA, onToggleSOTA,
   onPOTASpotClick,
   onWWFFSpotClick,
   onSOTASpotClick
@@ -83,6 +83,7 @@ export const PotaSotaPanel = ({
             data={potaData}
             loading={potaLoading}
             lastUpdated={potaLastUpdated}
+            lastChecked={potaLastChecked}
             showOnMap={showPOTA}
             onToggleMap={onTogglePOTA}
             onSpotClick={onPOTASpotClick}
@@ -92,6 +93,7 @@ export const PotaSotaPanel = ({
             data={sotaData}
             loading={sotaLoading}
             lastUpdated={sotaLastUpdated}
+            lastChecked={sotaLastChecked}
             showOnMap={showSOTA}
             onToggleMap={onToggleSOTA}
             onSpotClick={onSOTASpotClick}
@@ -101,6 +103,7 @@ export const PotaSotaPanel = ({
             data={wwffData}
             loading={wwffLoading}
             lastUpdated={wwffLastUpdated}
+            lastChecked={wwffLastChecked}
             showOnMap={showWWFF}
             onToggleMap={onToggleWWFF}
             onSpotClick={onWWFFSpotClick}

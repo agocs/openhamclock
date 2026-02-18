@@ -5,9 +5,10 @@
 import React from 'react';
 import CallsignLink from './CallsignLink.jsx';
 
-export const SOTAPanel = ({ data, loading, lastUpdated, showOnMap, onToggleMap, onSpotClick }) => {
+export const SOTAPanel = ({ data, loading, lastUpdated, lastChecked, showOnMap, onToggleMap, onSpotClick }) => {
   const staleMinutes = lastUpdated ? Math.floor((Date.now() - lastUpdated) / 60000) : null;
   const isStale = staleMinutes !== null && staleMinutes >= 5;
+  const checkedTime = lastChecked ? new Date(lastChecked).toISOString().substr(11, 5) + 'z' : '';
 
   return (
     <div className="panel" style={{ padding: '8px', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -20,7 +21,7 @@ export const SOTAPanel = ({ data, loading, lastUpdated, showOnMap, onToggleMap, 
       }}>
         <span>
           ⛰ SOTA ACTIVATORS {data?.length > 0 ? `(${data.length})` : ''}
-          {isStale && <span title={`Last updated ${staleMinutes}m ago`} style={{ color: staleMinutes >= 10 ? '#ff4444' : '#ffaa00', marginLeft: '6px', fontSize: '9px' }}>⚠ {staleMinutes}m ago</span>}
+          {checkedTime && <span style={{ color: isStale ? (staleMinutes >= 10 ? '#ff4444' : '#ffaa00') : '#666', marginLeft: '6px', fontSize: '9px' }}>{isStale ? `⚠ ${staleMinutes}m stale` : `✓${checkedTime}`}</span>}
         </span>
         <button
           onClick={onToggleMap}
