@@ -44,17 +44,17 @@ const CHANGELOG = [
       {
         icon: '🔌',
         title: 'Rig Listener — FT-DX10 & Windows Serial Fix',
-        desc: 'Fixed two Rig Listener bugs: (1) FT-DX10 (and other radios using CP210x USB-serial adapters on Windows) weren't receiving data because DTR was left LOW. The listener now asserts DTR HIGH after opening the port with a 300ms stabilisation delay and hupcl:false to prevent DTR drop on reconnect. (2) Windows systems with Node.js pre-installed would fail to find npm during the bat-file setup because the system Node path wasn't being resolved correctly — fixed with 'where node' / 'where npm' full-path resolution.'
+        desc: 'Fixed two Rig Listener bugs: (1) FT-DX10 (and other radios using CP210x USB-serial adapters on Windows) weren\'t receiving data because DTR was left LOW. The listener now asserts DTR HIGH after opening the port with a 300ms stabilisation delay and hupcl:false to prevent DTR drop on reconnect. (2) Windows systems with Node.js pre-installed would fail to find npm during the bat-file setup because the system Node path wasn\'t being resolved correctly — fixed with \u2018where node\u2019 / \u2018where npm\u2019 full-path resolution.'
       },
       {
         icon: '📍',
         title: 'Portable Callsign Location Fix',
-        desc: 'Portable and mobile callsigns (e.g. PJ2/W9WI, DL/W1ABC, 5Z4/OZ6ABL) now resolve to the correct DXCC entity on the map. Previously, the operating prefix was being stripped and the home callsign's country was used instead. A new extractOperatingPrefix() function identifies which part of a compound callsign carries the DXCC information and uses that for location lookups, while still using the base callsign for QRZ lookups.'
+        desc: 'Portable and mobile callsigns (e.g. PJ2/W9WI, DL/W1ABC, 5Z4/OZ6ABL) now resolve to the correct DXCC entity on the map. Previously, the operating prefix was being stripped and the home callsign\'s country was used instead. A new extractOperatingPrefix() function identifies which part of a compound callsign carries the DXCC information and uses that for location lookups, while still using the base callsign for QRZ lookups.'
       },
       {
         icon: '😊',
         title: 'Emoji Icons on Linux — CSS Font Stack & Docs',
-        desc: 'Added a proper emoji font-family stack to main.css so the browser finds whatever color emoji font is available (Noto Color Emoji, Segoe UI Emoji, Apple Color Emoji, Twemoji). The Raspberry Pi setup script now installs fonts-noto-color-emoji automatically. New FAQ entry in README.md explains the one-line fix for manual installs and clarifies it's needed on the browser machine, not the server.'
+        desc: 'Added a proper emoji font-family stack to main.css so the browser finds whatever color emoji font is available (Noto Color Emoji, Segoe UI Emoji, Apple Color Emoji, Twemoji). The Raspberry Pi setup script now installs fonts-noto-color-emoji automatically. New FAQ entry in README.md explains the one-line fix for manual installs and clarifies it\'s needed on the browser machine, not the server.'
       },
       {
         icon: '✅',
