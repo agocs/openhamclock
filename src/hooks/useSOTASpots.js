@@ -64,6 +64,7 @@ export const useSOTASpots = () => {
                   ? `${s.associationCode}/${s.summitCode}`
                   : (s.summitCode || ''),
                 summit: details.name || '',
+                name: `${details.name} (${details.points}pt)`,
                 altM: details.altM || details.altitude || null,
                 points: details.points || s.points || null,
                 freq,
